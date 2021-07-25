@@ -13,3 +13,5 @@ install: piboard
 	install piboard /usr/bin
 	install piboard.png /usr/share/pixmaps
 	install piboard.desktop /usr/share/applications
+	lxpanelctl restart
+	
