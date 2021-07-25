@@ -427,26 +427,23 @@ activate (GtkApplication *app,
 
   g_signal_connect (drawing_area, "draw",
                     G_CALLBACK (screen_draw), NULL);
+  g_signal_connect (drawing_area, "button-press-event",
+                    G_CALLBACK (button_press_event_cb), NULL);
+  g_signal_connect (drawing_area, "button-release-event",
+                    G_CALLBACK (button_release_event_cb), NULL);
+
+  gtk_widget_set_events (drawing_area, gtk_widget_get_events (drawing_area)
+                                     | GDK_BUTTON_PRESS_MASK
+                                     | GDK_BUTTON_RELEASE_MASK
+                                     | GDK_POINTER_MOTION_MASK);
   if (!piboard.publisher)
   {
-    g_signal_connect (drawing_area, "button-press-event",
-                      G_CALLBACK (button_press_event_cb), NULL);
-    g_signal_connect (drawing_area, "button-release-event",
-                      G_CALLBACK (button_release_event_cb), NULL);
-
-    gtk_widget_set_events (drawing_area, gtk_widget_get_events (drawing_area)
-                                       | GDK_BUTTON_PRESS_MASK
-                                       | GDK_BUTTON_RELEASE_MASK
-                                       | GDK_POINTER_MOTION_MASK);
-
     piboard.nn_socket = nn_socket (AF_SP, NN_PUB);
-    printf ("socket: %d.\n", piboard.nn_socket);
     nn_bind (piboard.nn_socket, "tcp://*:7789");
   }
   else
   {
     piboard.nn_socket = nn_socket (AF_SP, NN_SUB);
-    printf ("socket: %d.\n", piboard.nn_socket);
     nn_setsockopt(piboard.nn_socket, NN_SUB, NN_SUB_SUBSCRIBE, "", 0);
     char url[100];
     memset (url, 0, 100);
