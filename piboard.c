@@ -271,7 +271,8 @@ button_release_event_cb (GtkWidget *widget,
 }
 
 static void
-close_window (void)
+close_window (GtkWidget *widget,
+              gpointer   data)
 {
   if (piboard.surface)
     mypaint_surface_unref((MyPaintSurface *)piboard.surface);
@@ -280,6 +281,7 @@ close_window (void)
   free (piboard.dirties.tiles);
   nn_close(piboard.nn_socket);
   printf ("closed.\n");
+  g_application_quit(G_APPLICATION(data));
 }
 
 static gboolean
@@ -407,7 +409,7 @@ activate (GtkApplication *app,
   gtk_window_set_title (GTK_WINDOW (window), "PiBoard");
   gtk_widget_set_size_request (window, 300, 200);
 
-  g_signal_connect (window, "destroy", G_CALLBACK (close_window), NULL);
+  g_signal_connect (window, "destroy", G_CALLBACK (close_window), user_data);
 
   gtk_container_set_border_width (GTK_CONTAINER (window), 8);
 
@@ -501,7 +503,7 @@ main (int    argc,
   sprintf (str, "com.pi-classroom.piboard_%04d", getpid() );
   app = gtk_application_new (str, G_APPLICATION_FLAGS_NONE);
 
-  g_signal_connect (app, "activate", G_CALLBACK (activate), NULL);
+  g_signal_connect (app, "activate", G_CALLBACK (activate), app);
 
   status = g_application_run (G_APPLICATION (app), 0, NULL);
   g_object_unref (app);
