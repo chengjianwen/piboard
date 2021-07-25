@@ -1,0 +1,14 @@
+[Desktop Entry]
+Encoding=UTF-8
+Type=Application
+Version=1.0
+Name=PiBoard
+Comment=An remote write board for sharing
+Icon=/usr/share/pixmaps/piboard.png
+Exec=piboard
+Terminal=false
+Categories=Graphics;Utility;
+StartupNotify=false
+Name[zh_CN]=远程白板
+GenericName[zh_CN]=远程白板
+Comment[zh_CN]=用于远程教学的白板软件
