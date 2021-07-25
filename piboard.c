@@ -406,7 +406,10 @@ activate (GtkApplication *app,
   GtkWidget *drawing_area;
 
   window = gtk_application_window_new (app);
-  gtk_window_set_title (GTK_WINDOW (window), "PiBoard");
+  if (piboard.publisher)
+    gtk_window_set_title (GTK_WINDOW (window), "PiBoard-Subcriber");
+  else
+    gtk_window_set_title (GTK_WINDOW (window), "PiBoard-Publisher");
   gtk_widget_set_size_request (window, 300, 200);
 
   g_signal_connect (window, "destroy", G_CALLBACK (close_window), user_data);
