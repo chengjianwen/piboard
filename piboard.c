@@ -11,6 +11,7 @@
 #include <nanomsg/pubsub.h>
 #include <ctype.h>
 #include <math.h>
+#include "shl_array.h"
 
 #define DEFAULT_BRUSH	"/usr/share/mypaint-data/1.0/brushes/deevad/pen-note.myb"
 
@@ -32,13 +33,8 @@ struct PublishEvent {
 };
 
 struct DirtyTile {
-    unsigned int  tx;
-    unsigned int  ty;
-};
-
-struct DirtyTiles {
-    struct DirtyTile   *tiles;
-    unsigned int       length;
+    unsigned int tx;
+    unsigned int ty;
 };
 
 struct PiBoardApp {
@@ -46,8 +42,8 @@ struct PiBoardApp {
 	MyPaintBrush             *brush;
 	int	                  nn_socket;
         char                      *publisher;
-        struct DirtyTiles         dirties;
-        GMutex                    lock;
+        struct shl_array          *motions;
+        struct shl_array          *dirties;
 };
 
 struct PiBoardApp	piboard;
@@ -56,118 +52,88 @@ static gboolean
 screen_draw (GtkWidget *widget,
          cairo_t   *cr, gpointer   data)
 {
-  struct DirtyTiles *copy = (struct DirtyTiles *)malloc (sizeof (struct DirtyTiles) );
-  g_mutex_lock (&piboard.lock);
-  copy->length = piboard.dirties.length;
-  copy->tiles = (struct DirtyTile *) malloc (sizeof (struct DirtyTile) * copy->length);
-  memcpy (copy->tiles, piboard.dirties.tiles, sizeof (struct DirtyTile) * copy->length);
-  free (piboard.dirties.tiles);
-  piboard.dirties.tiles = NULL;
-  piboard.dirties.length = 0;
-  g_mutex_unlock (&piboard.lock);
-
   const int width = mypaint_fixed_tiled_surface_get_width (piboard.surface);
   const int height = mypaint_fixed_tiled_surface_get_height (piboard.surface);
 
   const int tile_size = MYPAINT_TILE_SIZE;
   const int number_of_tile_rows = (height / tile_size) + 1 * (height % tile_size != 0);
   const int tiles_per_rows = (width / tile_size) + 1 * (width % tile_size != 0); 
+
+  MyPaintTiledSurface *surface = (MyPaintTiledSurface *)piboard.surface;
+
+// 保存先，预防被brush_draw修改
+  MyPaintRectangle roi = surface->dirty_bbox;
+
   for (int ty = 0; ty < number_of_tile_rows; ty++)
+  {
+    if (ty * tile_size >= roi.y + roi.height)
+      continue;
+    if ((ty + 1) * tile_size <= roi.y)
+      continue;
     for (int tx = 0; tx < tiles_per_rows; tx++)
     {
-      gboolean     drawing = TRUE;
-      if (copy->length > 0)
-      {
-        // 只绘制改动的部分
-        drawing = FALSE;
-        for (int i = 0; i < copy->length; i++)
-          if (copy->tiles[i].tx == tx && copy->tiles[i].ty == ty)
-          {
-            drawing = TRUE;
-            break;;
-          }
-      }
-      if (drawing)
-      {
-        MyPaintTileRequest request;
-        mypaint_tile_request_init(&request, 0, tx, ty, TRUE);
-        mypaint_tiled_surface_tile_request_start((MyPaintTiledSurface *)piboard.surface, &request);
-        const int max_y = (ty < number_of_tile_rows - 1 || height % tile_size == 0) ? tile_size : height % tile_size;
-        for (int y = 0; y < max_y; y++) {
-          const int max_x = (tx < tiles_per_rows - 1 || width % tile_size == 0) ? tile_size : width % tile_size;
-          const int yy = ty * tile_size + y;
-          for (int x = 0; x < max_x; x++) {
-            const int xx = tx * tile_size + x;
-            const int offset = tile_size * y + x;
-            const uint16_t r = (request.buffer[offset * 4] & 0xF800) >> 11;
-            const uint16_t g = (request.buffer[offset * 4] & 0x07E0) >> 5;
-            const uint16_t b = request.buffer[offset * 4] & 0x1F;
-            cairo_set_source_rgb(cr, (double)r / 0x1F, (double)g / 0x3F, (double)b / 0x1F);
-            cairo_set_line_width (cr, 1);
-            cairo_move_to(cr, xx, yy);
-            cairo_line_to(cr, xx + 1, yy + 1);
-            cairo_stroke(cr);
-          }
+      if (tx * tile_size >= roi.x + roi.width)
+        continue;
+      if ((tx + 1) * tile_size <= roi.x)
+        continue;
+
+      MyPaintTileRequest request;
+      mypaint_tile_request_init(&request, 0, tx, ty, TRUE);
+      mypaint_tiled_surface_tile_request_start(surface, &request);
+      const int max_y = (ty < number_of_tile_rows - 1 || height % tile_size == 0) ? tile_size : height % tile_size;
+      for (int y = 0; y < max_y; y++) {
+        const int max_x = (tx < tiles_per_rows - 1 || width % tile_size == 0) ? tile_size : width % tile_size;
+        const int yy = ty * tile_size + y;
+        for (int x = 0; x < max_x; x++) {
+          const int xx = tx * tile_size + x;
+          const int offset = tile_size * y + x;
+          const uint16_t r = (request.buffer[offset * 4] & 0xF800) >> 11;
+          const uint16_t g = (request.buffer[offset * 4] & 0x07E0) >> 5;
+          const uint16_t b = request.buffer[offset * 4] & 0x1F;
+          cairo_set_source_rgb(cr, (double)r / 0x1F, (double)g / 0x3F, (double)b / 0x1F);
+          cairo_set_line_width (cr, 1);
+          cairo_move_to(cr, xx, yy);
+          cairo_line_to(cr, xx + 1, yy + 1);
+          cairo_stroke(cr);
         }
-        mypaint_tiled_surface_tile_request_end((MyPaintTiledSurface *)piboard.surface, &request);
       }
+      mypaint_tiled_surface_tile_request_end(surface, &request);
     }
-  free (copy->tiles);
-  free (copy);
+  }
+  piboard.motions->length = 0;
   return G_SOURCE_CONTINUE;
 }
 
 static void
-brush_draw (GtkWidget *widget,
-            gdouble    x,
-            gdouble    y,
-            guint32    time)
+brush_draw (GtkWidget *widget)
 {
-  static guint32 last = 0;
-  double dtime;
-  if (!last)
-  {
-    last = time;
+  int size = shl_array_get_length (piboard.motions);
+  if (!size)
     return;
-  }
+  GdkEventMotion *m = SHL_ARRAY_AT(piboard.motions, GdkEventMotion, 0);
+  guint32 last = m->time;
+  double dtime;
+  MyPaintRectangle roi;
+  MyPaintSurface *surface;
+  surface = (MyPaintSurface *)piboard.surface;
+  mypaint_surface_begin_atomic(surface);
+  for (int i = 1; i < size; i++)
+  {
+    m = SHL_ARRAY_AT(piboard.motions, GdkEventMotion, i);
+    dtime = (double)(m->time - last) / 1000;
+    last = m->time;
 
-  dtime = (double)(time - last) / 1000;
-  last = time;
-  mypaint_surface_begin_atomic((MyPaintSurface *)piboard.surface);
-  mypaint_brush_stroke_to ( piboard.brush,
-                            (MyPaintSurface *)piboard.surface,
-                            x,
-                            y,
+    mypaint_brush_stroke_to ( piboard.brush,
+                            surface,
+                            m->x,
+                            m->y,
                             1.0,        // pressure
                             0.0,        // xtilt
                             0.0,        // ytilt
                             dtime);       // dtime
-  MyPaintRectangle roi;
-  mypaint_surface_end_atomic((MyPaintSurface *)piboard.surface, &roi);
-  g_mutex_lock (&piboard.lock);
-  for (int ty = roi.y / MYPAINT_TILE_SIZE; ty < (roi.y + roi.height) / MYPAINT_TILE_SIZE + 1; ty++)
-    for (int tx = roi.x / MYPAINT_TILE_SIZE; tx < (roi.x + roi.width) / MYPAINT_TILE_SIZE + 1; tx++)
-    {
-      gboolean  found = FALSE;
-      for (int i = 0; i < piboard.dirties.length; i++)
-        if (piboard.dirties.tiles[i].tx == tx
-        && piboard.dirties.tiles[i].ty == ty)
-        {
-          found = TRUE;
-          break;
-        }
-
-      if (!found)
-      {
-        piboard.dirties.tiles = (struct DirtyTile *)realloc (piboard.dirties.tiles, sizeof (struct DirtyTile) * (piboard.dirties.length + 1));
-        piboard.dirties.tiles[piboard.dirties.length].tx = tx;
-        piboard.dirties.tiles[piboard.dirties.length].ty = ty;
-        piboard.dirties.length++;
-      }
-    }
-  g_mutex_unlock (&piboard.lock);
+  }
+  mypaint_surface_end_atomic(surface, &roi);
   
-  /* Now invalidate the affected region of the drawing area. */
   gtk_widget_queue_draw_area (widget, roi.x, roi.y, roi.width, roi.height);
 }
 
@@ -201,7 +167,7 @@ motion_notify_event_cb (GtkWidget *widget,
 {
   if (event->state & GDK_BUTTON1_MASK)
   {
-    brush_draw (widget, event->x, event->y, event->time);
+    shl_array_push (piboard.motions, event);
     if (!piboard.publisher)
     {
       struct PublishEvent pe;
@@ -224,10 +190,11 @@ button_press_event_cb (GtkWidget *widget,
 {
   if (event->button == GDK_BUTTON_PRIMARY)
     {
+      g_signal_connect (widget, "motion-notify-event",
+                    G_CALLBACK (motion_notify_event_cb), NULL);
       if (piboard.brush)
         mypaint_brush_reset (piboard.brush);
-      g_signal_connect (widget, "motion-notify-event",
-                       G_CALLBACK (motion_notify_event_cb), NULL);
+
       if (!piboard.publisher)
       {
         struct PublishEvent pe;
@@ -266,6 +233,7 @@ button_release_event_cb (GtkWidget *widget,
 
       nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
     }
+    brush_draw (widget);
   }
   return TRUE;
 }
@@ -278,7 +246,6 @@ close_window (GtkWidget *widget,
     mypaint_surface_unref((MyPaintSurface *)piboard.surface);
   if (piboard.brush)
     mypaint_brush_unref(piboard.brush);
-  free (piboard.dirties.tiles);
   nn_close(piboard.nn_socket);
   printf ("closed.\n");
   g_application_quit(G_APPLICATION(data));
@@ -289,15 +256,8 @@ configure_event_cb (GtkWidget         *widget,
                     GdkEventConfigure *event,
                     gpointer           data)
 {
-  g_signal_handlers_disconnect_by_func (widget, G_CALLBACK ("screen_draw"), NULL);
-
   if (piboard.surface)
   {
-    g_mutex_lock (&piboard.lock);
-    piboard.dirties.length = 0;
-    free (piboard.dirties.tiles);
-    piboard.dirties.tiles = NULL;
-    g_mutex_unlock (&piboard.lock);
     mypaint_surface_unref ((MyPaintSurface *)piboard.surface);
     printf ("surface (%dx%d) destroyed.\n",
             mypaint_fixed_tiled_surface_get_width (piboard.surface),
@@ -306,7 +266,6 @@ configure_event_cb (GtkWidget         *widget,
 
   piboard.surface = mypaint_fixed_tiled_surface_new(gtk_widget_get_allocated_width (widget),
                                             gtk_widget_get_allocated_height (widget));
-  g_signal_connect (widget, "draw", G_CALLBACK (screen_draw), NULL);
   printf ("surface (%dx%d) initilized.\n",
           mypaint_fixed_tiled_surface_get_width (piboard.surface),
           mypaint_fixed_tiled_surface_get_height (piboard.surface));
@@ -469,7 +428,8 @@ main (int    argc,
   int status;
 
   memset (&piboard, 0, sizeof (struct PiBoardApp));
-  g_mutex_init (&piboard.lock);
+  shl_array_new (&piboard.motions, sizeof (GdkEventMotion), 1024);
+  shl_array_new (&piboard.dirties, sizeof (struct DirtyTile), 1024);
 
   FILE *fp;
   fp = fopen ("/etc/piboard.conf", "r");
