@@ -32,18 +32,12 @@ struct PublishEvent {
     unsigned int   time;
 };
 
-struct DirtyTile {
-    unsigned int tx;
-    unsigned int ty;
-};
-
 struct PiBoardApp {
 	MyPaintFixedTiledSurface *surface;
 	MyPaintBrush             *brush;
 	int	                  nn_socket;
         char                      *publisher;
         struct shl_array          *motions;
-        struct shl_array          *dirties;
 };
 
 struct PiBoardApp	piboard;
@@ -429,7 +423,6 @@ main (int    argc,
 
   memset (&piboard, 0, sizeof (struct PiBoardApp));
   shl_array_new (&piboard.motions, sizeof (GdkEventMotion), 1024);
-  shl_array_new (&piboard.dirties, sizeof (struct DirtyTile), 1024);
 
   FILE *fp;
   fp = fopen ("/etc/piboard.conf", "r");
