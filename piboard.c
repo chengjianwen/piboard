@@ -15,20 +15,19 @@
 
 #define DEFAULT_BRUSH	"/usr/share/mypaint-data/1.0/brushes/deevad/pen-note.myb"
 
-/*
-  用于发送的报文结构
-  type表示类型，
-      0: motion
-      1: button1 pressed
-      2: button2 pressed
-      3: button  released
-  x和y表示坐标位置
-*/
+typedef enum {
+    MOTION,
+    BUTTON1_PRESSED,
+    BUTTON2_PRESSED,
+    BUTTON1_RELEASED,
+    BUTTON2_RELEASED
+} PUBLISH_EVENT_TYPE;
 
 struct PublishEvent {
-    unsigned char type;
+    PUBLISH_EVENT_TYPE type;
     unsigned short x;
     unsigned short y;
+    int      button;
     unsigned int   time;
 };
 
@@ -46,6 +45,7 @@ static gboolean
 screen_draw (GtkWidget *widget,
          cairo_t   *cr, gpointer   data)
 {
+  printf ("begin screen drawing.\n");
   const int width = mypaint_fixed_tiled_surface_get_width (piboard.surface);
   const int height = mypaint_fixed_tiled_surface_get_height (piboard.surface);
 
@@ -83,12 +83,14 @@ screen_draw (GtkWidget *widget,
     }
   }
   piboard.motions->length = 0;
+  printf ("screen drawing finished.\n");
   return G_SOURCE_CONTINUE;
 }
 
 static void
 brush_draw (GtkWidget *widget)
 {
+  printf ("begin brush drawing.\n");
   int size = shl_array_get_length (piboard.motions);
   if (!size)
     return;
@@ -115,6 +117,7 @@ brush_draw (GtkWidget *widget)
                             dtime);       // dtime
   }
   mypaint_surface_end_atomic(surface, &roi);
+  printf ("brush draw finished.\n");
   
   gtk_widget_queue_draw_area (widget, roi.x, roi.y, roi.width, roi.height);
 }
@@ -122,6 +125,7 @@ brush_draw (GtkWidget *widget)
 static void 
 clear_surface ()
 {
+  printf ("begin clearing surface..\n");
   const int tile_size = MYPAINT_TILE_SIZE;
   const int width = mypaint_fixed_tiled_surface_get_width (piboard.surface);
   const int height = mypaint_fixed_tiled_surface_get_height (piboard.surface);
@@ -139,7 +143,7 @@ clear_surface ()
       mypaint_tiled_surface_tile_request_end((MyPaintTiledSurface *)piboard.surface, &request);
     }
   }
-  printf ("surface cleared.\n");
+  printf ("clear surface finished.\n");
 }
 
 static gboolean
@@ -147,19 +151,16 @@ motion_notify_event_cb (GtkWidget *widget,
                         GdkEventMotion *event,
                         gpointer        data)
 {
-  if (event->state & GDK_BUTTON1_MASK)
+  shl_array_push (piboard.motions, event);
+  if (!piboard.publisher)
   {
-    shl_array_push (piboard.motions, event);
-    if (!piboard.publisher)
-    {
-      struct PublishEvent pe;
-      pe.type = 0;
-      pe.x = event->x;
-      pe.y = event->y;
-      pe.time = event->time;
+    struct PublishEvent pe;
+    pe.type = MOTION;
+    pe.x = event->x;
+    pe.y = event->y;
+    pe.time = event->time;
 
-      nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
-    }
+    nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
   }
 
   return TRUE;
@@ -170,33 +171,35 @@ button_press_event_cb (GtkWidget *widget,
                        GdkEventButton *event,
                        gpointer        data)
 {
-  if (event->button == GDK_BUTTON_PRIMARY)
-    {
+  struct PublishEvent pe;
+  switch (event->button)
+  {
+    case GDK_BUTTON_PRIMARY:
       g_signal_connect (widget, "motion-notify-event",
                     G_CALLBACK (motion_notify_event_cb), NULL);
       if (piboard.brush)
         mypaint_brush_reset (piboard.brush);
-
       if (!piboard.publisher)
       {
-        struct PublishEvent pe;
-        pe.type = 1;
+        pe.type = BUTTON1_PRESSED;
 
         nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
       }
-    }
-  else if (event->button == GDK_BUTTON_SECONDARY)
-    {
+      break;
+    case GDK_BUTTON_SECONDARY:
       clear_surface();
       gtk_widget_queue_draw (widget);
       if (!piboard.publisher)
       {
-        struct PublishEvent pe;
-        pe.type = 2;
+        pe.type = BUTTON2_PRESSED;
 
         nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
       }
-    }
+      break;
+    default:
+      break;
+  }
+
   return TRUE;
 }
 
@@ -205,17 +208,27 @@ button_release_event_cb (GtkWidget *widget,
                        GdkEventButton *event,
                        gpointer        data)
 {
+  g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (motion_notify_event_cb), NULL);
   if (event->state & GDK_BUTTON1_MASK)
   {
-    g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (motion_notify_event_cb), NULL);
+    brush_draw (widget);
     if (!piboard.publisher)
     {
       struct PublishEvent pe;
-      pe.type = 3;
+      pe.type = BUTTON1_RELEASED;
 
       nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
     }
-    brush_draw (widget);
+  }
+  else if (event->state & GDK_BUTTON2_MASK)
+  {
+    if (!piboard.publisher)
+    {
+      struct PublishEvent pe;
+      pe.type = BUTTON2_RELEASED;
+
+      nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
+    }
   }
   return TRUE;
 }
@@ -302,7 +315,7 @@ nn_sub (gpointer user_data)
         GdkEventButton      button;
         switch (event->type)
         {
-            case 0:
+            case MOTION:
                 motion.x = event->x;
                 motion.y = event->y;
                 motion.time  = event->time;
@@ -311,20 +324,26 @@ nn_sub (gpointer user_data)
                                         &motion,
                                         NULL);
                 break;
-            case 1:
+            case BUTTON1_PRESSED:
                 button.button = GDK_BUTTON_PRIMARY;
                 button_press_event_cb ((GtkWidget *)user_data,
                                        &button,
                                        NULL);
                 break;
-            case 2:
+            case BUTTON2_PRESSED:
                 button.button = GDK_BUTTON_SECONDARY;
                 button_press_event_cb ((GtkWidget *)user_data,
                                        &button,
                                        NULL);
                 break;
-            case 3:
-                motion.state |= GDK_BUTTON1_MASK;
+            case BUTTON1_RELEASED:
+                button.state |= GDK_BUTTON1_MASK;
+                button_release_event_cb ((GtkWidget *)user_data,
+                                       &button,
+                                       NULL);
+                break;
+            case BUTTON2_RELEASED:
+                button.state |= GDK_BUTTON2_MASK;
                 button_release_event_cb ((GtkWidget *)user_data,
                                        &button,
                                        NULL);
