@@ -52,25 +52,13 @@ screen_draw (GtkWidget *widget,
   const int tile_size = MYPAINT_TILE_SIZE;
   const int number_of_tile_rows = (height / tile_size) + 1 * (height % tile_size != 0);
   const int tiles_per_rows = (width / tile_size) + 1 * (width % tile_size != 0); 
-
   MyPaintTiledSurface *surface = (MyPaintTiledSurface *)piboard.surface;
 
-// 保存先，预防被brush_draw修改
-  MyPaintRectangle roi = surface->dirty_bbox;
-
-  for (int ty = 0; ty < number_of_tile_rows; ty++)
+  for (int ty = (int)floor((double)surface->dirty_bbox.y / tile_size); ty < (int)ceil((double)(surface->dirty_bbox.y + surface->dirty_bbox.height) / tile_size); ty++)
   {
-    if (ty * tile_size >= roi.y + roi.height)
-      continue;
-    if ((ty + 1) * tile_size <= roi.y)
-      continue;
-    for (int tx = 0; tx < tiles_per_rows; tx++)
+    for (int tx = (int)floor((double)surface->dirty_bbox.x / tile_size); tx < (int)ceil((double)(surface->dirty_bbox.x + surface->dirty_bbox.width) / tile_size); tx++)
     {
-      if (tx * tile_size >= roi.x + roi.width)
-        continue;
-      if ((tx + 1) * tile_size <= roi.x)
-        continue;
-
+      printf ("drawing tile: %d %d.\n", tx, ty);
       MyPaintTileRequest request;
       mypaint_tile_request_init(&request, 0, tx, ty, TRUE);
       mypaint_tiled_surface_tile_request_start(surface, &request);
