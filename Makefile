@@ -3,7 +3,7 @@ all: piboard
 LIBS	= `pkg-config --libs gtk+-3.0 libmypaint nanomsg`
 CFLAGS	= `pkg-config --cflags gtk+-3.0 libmypaint nanomsg` -g
 
-piboard: piboard.o
+piboard: piboard.o mypaint-resizable-tiled-surface.o
 	$(CC) $(LIBS) -o $@ $^
 
 clean:

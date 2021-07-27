@@ -6,11 +6,11 @@
 
 #include <gtk/gtk.h>
 #include <mypaint-brush.h>
-#include <mypaint-fixed-tiled-surface.h>
 #include <nanomsg/nn.h>
 #include <nanomsg/pubsub.h>
 #include <ctype.h>
 #include <math.h>
+#include "mypaint-resizable-tiled-surface.h"
 #include "shl_array.h"
 
 #define DEFAULT_BRUSH	"/usr/share/mypaint-data/1.0/brushes/deevad/pen-note.myb"
@@ -32,11 +32,11 @@ struct PublishEvent {
 };
 
 struct PiBoardApp {
-	MyPaintFixedTiledSurface *surface;
-	MyPaintBrush             *brush;
-	int	                  nn_socket;
-        char                      *publisher;
-        struct shl_array          *motions;
+	MyPaintResizableTiledSurface *surface;
+	MyPaintBrush                 *brush;
+	int	                     nn_socket;
+        char                         *publisher;
+        struct shl_array             *motions;
 };
 
 struct PiBoardApp	piboard;
@@ -45,26 +45,24 @@ static gboolean
 screen_draw (GtkWidget *widget,
          cairo_t   *cr, gpointer   data)
 {
-  printf ("begin screen drawing.\n");
-  const int width = mypaint_fixed_tiled_surface_get_width (piboard.surface);
-  const int height = mypaint_fixed_tiled_surface_get_height (piboard.surface);
+  const int width = mypaint_resizable_tiled_surface_get_width (piboard.surface);
+  const int height = mypaint_resizable_tiled_surface_get_height (piboard.surface);
 
   const int tile_size = MYPAINT_TILE_SIZE;
-  const int number_of_tile_rows = (height / tile_size) + 1 * (height % tile_size != 0);
-  const int tiles_per_rows = (width / tile_size) + 1 * (width % tile_size != 0); 
+  const int number_of_tile_rows = mypaint_resizable_tiled_surface_number_of_tile_rows (piboard.surface);
+  const int tiles_per_rows = mypaint_resizable_tiled_surface_tiles_per_rows (piboard.surface);
   MyPaintTiledSurface *surface = (MyPaintTiledSurface *)piboard.surface;
 
-  for (int ty = (int)floor((double)surface->dirty_bbox.y / tile_size); ty < (int)ceil((double)(surface->dirty_bbox.y + surface->dirty_bbox.height) / tile_size); ty++)
+  for (int tx = floor((double)surface->dirty_bbox.x / tile_size); tx < ceil((double)(surface->dirty_bbox.x + surface->dirty_bbox.width) / tile_size); tx++)
   {
-    for (int tx = (int)floor((double)surface->dirty_bbox.x / tile_size); tx < (int)ceil((double)(surface->dirty_bbox.x + surface->dirty_bbox.width) / tile_size); tx++)
+    for (int ty = floor((double)surface->dirty_bbox.y / tile_size); ty < ceil((double)(surface->dirty_bbox.y + surface->dirty_bbox.height) / tile_size); ty++)
     {
-      printf ("drawing tile: %d %d.\n", tx, ty);
+      const int max_x = tx < tiles_per_rows - 1 || width % tile_size == 0 ? tile_size : width % tile_size;
+      const int max_y = ty < number_of_tile_rows - 1 || height % tile_size == 0 ? tile_size : height % tile_size;
       MyPaintTileRequest request;
       mypaint_tile_request_init(&request, 0, tx, ty, TRUE);
       mypaint_tiled_surface_tile_request_start(surface, &request);
-      const int max_y = (ty < number_of_tile_rows - 1 || height % tile_size == 0) ? tile_size : height % tile_size;
       for (int y = 0; y < max_y; y++) {
-        const int max_x = (tx < tiles_per_rows - 1 || width % tile_size == 0) ? tile_size : width % tile_size;
         const int yy = ty * tile_size + y;
         for (int x = 0; x < max_x; x++) {
           const int xx = tx * tile_size + x;
@@ -83,14 +81,12 @@ screen_draw (GtkWidget *widget,
     }
   }
   piboard.motions->length = 0;
-  printf ("screen drawing finished.\n");
   return G_SOURCE_CONTINUE;
 }
 
 static void
 brush_draw (GtkWidget *widget)
 {
-  printf ("begin brush drawing.\n");
   int size = shl_array_get_length (piboard.motions);
   if (!size)
     return;
@@ -117,7 +113,6 @@ brush_draw (GtkWidget *widget)
                             dtime);       // dtime
   }
   mypaint_surface_end_atomic(surface, &roi);
-  printf ("brush draw finished.\n");
   
   gtk_widget_queue_draw_area (widget, roi.x, roi.y, roi.width, roi.height);
 }
@@ -125,25 +120,7 @@ brush_draw (GtkWidget *widget)
 static void 
 clear_surface ()
 {
-  printf ("begin clearing surface..\n");
-  const int tile_size = MYPAINT_TILE_SIZE;
-  const int width = mypaint_fixed_tiled_surface_get_width (piboard.surface);
-  const int height = mypaint_fixed_tiled_surface_get_height (piboard.surface);
-
-  const int number_of_tile_rows = (height / tile_size) + 1 * (height % tile_size != 0);
-  const int tiles_per_rows = (width / tile_size) + 1 * (width % tile_size != 0); 
-  for (int ty = 0; ty < number_of_tile_rows; ty++) {
-    for (int tx = 0; tx < tiles_per_rows; tx++) {
-      MyPaintTileRequest request;
-      mypaint_tile_request_init(&request, 0, tx, ty, FALSE);
-      mypaint_tiled_surface_tile_request_start((MyPaintTiledSurface *)piboard.surface, &request);
-
-      memset (request.buffer, 0xFF, tile_size * tile_size * 8);
-
-      mypaint_tiled_surface_tile_request_end((MyPaintTiledSurface *)piboard.surface, &request);
-    }
-  }
-  printf ("clear surface finished.\n");
+  mypaint_resizable_tiled_surface_clear (piboard.surface);
 }
 
 static gboolean
@@ -241,8 +218,8 @@ close_window (GtkWidget *widget,
     mypaint_surface_unref((MyPaintSurface *)piboard.surface);
   if (piboard.brush)
     mypaint_brush_unref(piboard.brush);
+  shl_array_free (piboard.motions);
   nn_close(piboard.nn_socket);
-  printf ("closed.\n");
   g_application_quit(G_APPLICATION(data));
 }
 
@@ -254,22 +231,15 @@ configure_event_cb (GtkWidget         *widget,
   if (piboard.surface)
   {
     mypaint_surface_unref ((MyPaintSurface *)piboard.surface);
-    printf ("surface (%dx%d) destroyed.\n",
-            mypaint_fixed_tiled_surface_get_width (piboard.surface),
-            mypaint_fixed_tiled_surface_get_height (piboard.surface));
   }
 
-  piboard.surface = mypaint_fixed_tiled_surface_new(gtk_widget_get_allocated_width (widget),
-                                            gtk_widget_get_allocated_height (widget));
-  printf ("surface (%dx%d) initilized.\n",
-          mypaint_fixed_tiled_surface_get_width (piboard.surface),
-          mypaint_fixed_tiled_surface_get_height (piboard.surface));
+  piboard.surface = mypaint_resizable_tiled_surface_new(gtk_widget_get_allocated_width (widget),
+                                            gtk_widget_get_allocated_height(widget));
 
   if (!piboard.brush)
   {
     gboolean load_brush = FALSE;
     piboard.brush = mypaint_brush_new();
-    printf ("brush created ok.\n");
 
     FILE	*fp = fopen (DEFAULT_BRUSH, "r");
     if (fp)
@@ -411,12 +381,10 @@ activate (GtkApplication *app,
     char url[100];
     memset (url, 0, 100);
     sprintf (url, "tcp://%s:7789", piboard.publisher);
-    printf ("%s\n", url);
     nn_connect (piboard.nn_socket, url);
     g_idle_add (nn_sub, drawing_area);
   }
   
-  printf ("%s mode.\n",  piboard.publisher ? "sub" : "pub");
   gtk_widget_show_all (window);
   gtk_window_present(GTK_WINDOW(window));
 }
