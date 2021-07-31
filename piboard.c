@@ -13,7 +13,7 @@
 #include "mypaint-resizable-tiled-surface.h"
 #include "shl_array.h"
 
-#define DEFAULT_BRUSH	"/usr/share/mypaint-data/1.0/brushes/deevad/pen-note.myb"
+#define DEFAULT_BRUSH	"deevad/liner.myb"
 
 typedef enum {
     MOTION,
@@ -99,7 +99,9 @@ brush_draw (GtkWidget *widget)
   MyPaintSurface *surface;
   surface = (MyPaintSurface *)piboard.surface;
   mypaint_surface_begin_atomic(surface);
-  for (int i = 1; i < size; i++)
+  mypaint_brush_reset (piboard.brush);
+  mypaint_brush_new_stroke (piboard.brush);
+  for (int i = 0; i < size; i++)
   {
     m = SHL_ARRAY_AT(piboard.motions, GdkEventMotion, i);
     dtime = (double)(m->time - last) / 1000;
@@ -158,8 +160,6 @@ button_press_event_cb (GtkWidget *widget,
     case GDK_BUTTON_PRIMARY:
       g_signal_connect (widget, "motion-notify-event",
                     G_CALLBACK (motion_notify_event_cb), NULL);
-      if (piboard.brush)
-        mypaint_brush_reset (piboard.brush);
       if (!piboard.publisher)
       {
         pe.type = BUTTON1_PRESSED;
@@ -245,7 +245,10 @@ configure_event_cb (GtkWidget         *widget,
     gboolean load_brush = FALSE;
     piboard.brush = mypaint_brush_new();
 
-    FILE	*fp = fopen (DEFAULT_BRUSH, "r");
+    char	path[1024];
+    memset (path, 0, 1024);
+    sprintf (path, "%s/.brushes/%s", getenv("HOME"), DEFAULT_BRUSH);
+    FILE	*fp = fopen (path, "r");
     if (fp)
     {
       fseek (fp, 0 , SEEK_END);
