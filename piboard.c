@@ -27,6 +27,8 @@ struct PublishEvent {
     PUBLISH_EVENT_TYPE type;
     unsigned short x;
     unsigned short y;
+    unsigned short width;
+    unsigned short height;
     int      button;
     unsigned int   time;
 };
@@ -135,6 +137,8 @@ motion_notify_event_cb (GtkWidget *widget,
     pe.type = MOTION;
     pe.x = event->x;
     pe.y = event->y;
+    pe.width = gtk_widget_get_allocated_width (widget);
+    pe.height = gtk_widget_get_allocated_height (widget);
     pe.time = event->time;
 
     nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
@@ -286,8 +290,8 @@ nn_sub (gpointer user_data)
         switch (event->type)
         {
             case MOTION:
-                motion.x = event->x;
-                motion.y = event->y;
+                motion.x = event->x * gtk_widget_get_allocated_width ((GtkWidget *)user_data) / event->width;
+                motion.y = event->y * gtk_widget_get_allocated_height ((GtkWidget *)user_data) / event->height;
                 motion.time  = event->time;
                 motion.state |= GDK_BUTTON1_MASK;
                 motion_notify_event_cb ((GtkWidget *)user_data,
