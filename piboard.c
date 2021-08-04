@@ -25,8 +25,11 @@ typedef enum {
 
 struct PublishEvent {
     PUBLISH_EVENT_TYPE type;
-    unsigned short x;
-    unsigned short y;
+    gdouble x;
+    gdouble y;
+    gdouble pressure;
+    gdouble xtilt;
+    gdouble ytilt;
     unsigned short width;
     unsigned short height;
     int      button;
@@ -92,8 +95,8 @@ brush_draw (GtkWidget *widget)
   int size = shl_array_get_length (piboard.motions);
   if (!size)
     return;
-  GdkEventMotion *m = SHL_ARRAY_AT(piboard.motions, GdkEventMotion, 0);
-  guint32 last = m->time;
+  struct PublishEvent *pe = SHL_ARRAY_AT(piboard.motions, struct PublishEvent, 0);
+  guint32 last = pe->time;
   double dtime;
   MyPaintRectangle roi;
   MyPaintSurface *surface;
@@ -103,22 +106,24 @@ brush_draw (GtkWidget *widget)
   mypaint_brush_new_stroke (piboard.brush);
   for (int i = 0; i < size; i++)
   {
-    m = SHL_ARRAY_AT(piboard.motions, GdkEventMotion, i);
-    dtime = (double)(m->time - last) / 1000;
-    last = m->time;
+    pe = SHL_ARRAY_AT(piboard.motions, GdkEventMotion, i);
+    dtime = (double)(pe->time - last) / 1000;
+    last = pe->time;
 
     mypaint_brush_stroke_to ( piboard.brush,
                             surface,
-                            m->x,
-                            m->y,
-                            1.0,        // pressure
-                            0.0,        // xtilt
-                            0.0,        // ytilt
-                            dtime);       // dtime
+                            pe->x,
+                            pe->y,
+                            pe->pressure,
+                            pe->xtilt,
+                            pe->ytilt,
+                            dtime);
   }
   mypaint_surface_end_atomic(surface, &roi);
   
   gtk_widget_queue_draw_area (widget, roi.x, roi.y, roi.width, roi.height);
+
+  //gdk_window_process_updates (widget->window, TRUE);
 }
 
 static void 
@@ -132,19 +137,22 @@ motion_notify_event_cb (GtkWidget *widget,
                         GdkEventMotion *event,
                         gpointer        data)
 {
-  shl_array_push (piboard.motions, event);
+  struct PublishEvent pe;
+  pe.type = MOTION;
+  pe.x = event->x;
+  pe.y = event->y;
+  if (!gdk_event_get_axis (event, GDK_AXIS_PRESSURE, &pe.pressure))
+    pe.pressure = 1.0;
+  if (!gdk_event_get_axis (event, GDK_AXIS_XTILT, &pe.xtilt))
+    pe.xtilt = 0.0;
+  if (!gdk_event_get_axis (event, GDK_AXIS_YTILT, &pe.ytilt))
+    pe.ytilt = 0.0;
+  pe.width = gtk_widget_get_allocated_width (widget);
+  pe.height = gtk_widget_get_allocated_height (widget);
+  pe.time = event->time;
+  shl_array_push (piboard.motions, &pe);
   if (!piboard.publisher)
-  {
-    struct PublishEvent pe;
-    pe.type = MOTION;
-    pe.x = event->x;
-    pe.y = event->y;
-    pe.width = gtk_widget_get_allocated_width (widget);
-    pe.height = gtk_widget_get_allocated_height (widget);
-    pe.time = event->time;
-
     nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
-  }
 
   return TRUE;
 }
@@ -158,28 +166,18 @@ button_press_event_cb (GtkWidget *widget,
   switch (event->button)
   {
     case GDK_BUTTON_PRIMARY:
+      pe.type = BUTTON1_PRESSED;
       g_signal_connect (widget, "motion-notify-event",
                     G_CALLBACK (motion_notify_event_cb), NULL);
-      if (!piboard.publisher)
-      {
-        pe.type = BUTTON1_PRESSED;
-
-        nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
-      }
       break;
     case GDK_BUTTON_SECONDARY:
+      pe.type = BUTTON2_PRESSED;
       clear_surface();
       gtk_widget_queue_draw (widget);
-      if (!piboard.publisher)
-      {
-        pe.type = BUTTON2_PRESSED;
-
-        nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
-      }
-      break;
-    default:
       break;
   }
+  if (!piboard.publisher)
+    nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
 
   return TRUE;
 }
@@ -189,28 +187,20 @@ button_release_event_cb (GtkWidget *widget,
                        GdkEventButton *event,
                        gpointer        data)
 {
-  g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (motion_notify_event_cb), NULL);
+  struct PublishEvent pe;
   if (event->state & GDK_BUTTON1_MASK)
   {
+    g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (motion_notify_event_cb), NULL);
     brush_draw (widget);
-    if (!piboard.publisher)
-    {
-      struct PublishEvent pe;
-      pe.type = BUTTON1_RELEASED;
-
-      nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
-    }
+    pe.type = BUTTON1_RELEASED;
   }
   else if (event->state & GDK_BUTTON2_MASK)
-  {
-    if (!piboard.publisher)
-    {
-      struct PublishEvent pe;
-      pe.type = BUTTON2_RELEASED;
+    pe.type = BUTTON2_RELEASED;
+  else
+    return TRUE;
 
-      nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
-    }
-  }
+  if (!piboard.publisher)
+    nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
   return TRUE;
 }
 
