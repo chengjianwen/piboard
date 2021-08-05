@@ -106,7 +106,7 @@ brush_draw (GtkWidget *widget)
   mypaint_brush_new_stroke (piboard.brush);
   for (int i = 0; i < size; i++)
   {
-    pe = SHL_ARRAY_AT(piboard.motions, GdkEventMotion, i);
+    pe = SHL_ARRAY_AT(piboard.motions, struct PublishEvent, i);
     dtime = (double)(pe->time - last) / 1000;
     last = pe->time;
 
@@ -141,11 +141,11 @@ motion_notify_event_cb (GtkWidget *widget,
   pe.type = MOTION;
   pe.x = event->x;
   pe.y = event->y;
-  if (!gdk_event_get_axis (event, GDK_AXIS_PRESSURE, &pe.pressure))
+  if (!gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_PRESSURE, &pe.pressure))
     pe.pressure = 1.0;
-  if (!gdk_event_get_axis (event, GDK_AXIS_XTILT, &pe.xtilt))
+  if (!gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_XTILT, &pe.xtilt))
     pe.xtilt = 0.0;
-  if (!gdk_event_get_axis (event, GDK_AXIS_YTILT, &pe.ytilt))
+  if (!gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_YTILT, &pe.ytilt))
     pe.ytilt = 0.0;
   pe.width = gtk_widget_get_allocated_width (widget);
   pe.height = gtk_widget_get_allocated_height (widget);
@@ -394,7 +394,7 @@ main (int    argc,
   int status;
 
   memset (&piboard, 0, sizeof (struct PiBoardApp));
-  shl_array_new (&piboard.motions, sizeof (GdkEventMotion), 1024);
+  shl_array_new (&piboard.motions, sizeof (struct PublishEvent), 1024);
 
   FILE *fp;
   fp = fopen ("/etc/piboard.conf", "r");
