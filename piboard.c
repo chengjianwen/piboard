@@ -383,7 +383,7 @@ activate (GtkApplication *app,
     memset (url, 0, 100);
     sprintf (url, "tcp://%s:7789", piboard.publisher);
     nn_connect (piboard.nn_socket, url);
-    g_idle_add (nn_sub, drawing_area);
+    g_timeout_add (10, nn_sub, drawing_area);
   }
   
   gtk_widget_show_all (window);
