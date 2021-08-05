@@ -13,6 +13,8 @@
 #include "mypaint-resizable-tiled-surface.h"
 #include "shl_array.h"
 
+#pragma pack(4)
+
 #define DEFAULT_BRUSH	"deevad/liner.myb"
 
 typedef enum {
@@ -25,13 +27,13 @@ typedef enum {
 
 struct PublishEvent {
     PUBLISH_EVENT_TYPE type;
-    unsigned short x;
-    unsigned short y;
-    unsigned char pressure;
-    unsigned char xtilt;
-    unsigned char ytilt;
-    unsigned short width;
-    unsigned short height;
+    gdouble x;
+    gdouble y;
+    gdouble pressure;
+    gdouble xtilt;
+    gdouble ytilt;
+    unsigned int width;
+    unsigned int height;
     int      button;
     unsigned int   time;
 };
@@ -110,13 +112,13 @@ brush_draw (GtkWidget *widget)
     dtime = (double)(pe->time - last) / 1000;
     last = pe->time;
 
-    mypaint_brush_stroke_to ( piboard.brush,
+    mypaint_brush_stroke_to (piboard.brush,
                             surface,
                             pe->x,
                             pe->y,
-                            (double)pe->pressure / 10,
-                            (double)pe->xtilt / 10,
-                            (double)pe->ytilt / 10,
+                            pe->pressure,
+                            pe->xtilt,
+                            pe->ytilt,
                             dtime);
   }
   mypaint_surface_end_atomic(surface, &roi);
@@ -147,9 +149,9 @@ motion_notify_event_cb (GtkWidget *widget,
     pe->x = event->x;
     pe->y = event->y;
     gdouble pressure, xtilt, ytilt;
-    pe->pressure = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_PRESSURE, &pressure) ? pressure * 10 : 10;
-    pe->xtilt = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_XTILT, &xtilt) ? xtilt * 10 : 0;
-    pe->ytilt = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_YTILT, &ytilt) ? ytilt * 10 : 0;
+    pe->pressure = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_PRESSURE, &pressure) ? pressure : 1.0;
+    pe->xtilt = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_XTILT, &xtilt) ? xtilt : 0.0;
+    pe->ytilt = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_YTILT, &ytilt) ? ytilt : 0.0;
     pe->width = gtk_widget_get_allocated_width (widget);
     pe->height = gtk_widget_get_allocated_height (widget);
     pe->time = event->time;
