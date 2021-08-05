@@ -7,7 +7,7 @@ piboard: piboard.o mypaint-resizable-tiled-surface.o
 	$(CC) $(LIBS) -o $@ $^
 
 clean:
-	rm -f piboard.o piboard
+	rm -f piboard.o mypaint-resizable-tiled-surface.o piboard
 
 install: piboard
 	install piboard /usr/bin
