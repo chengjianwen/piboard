@@ -22,10 +22,11 @@ typedef enum {
     BUTTON1_PRESSED,
     BUTTON2_PRESSED,
     BUTTON1_RELEASED,
-    BUTTON2_RELEASED
+    BUTTON2_RELEASED,
+    KEY_PRESSED
 } PUBLISH_EVENT_TYPE;
 
-struct PublishEvent {
+struct SerializEvent {
     PUBLISH_EVENT_TYPE type;
     gdouble x;
     gdouble y;
@@ -35,6 +36,7 @@ struct PublishEvent {
     unsigned int width;
     unsigned int height;
     int      button;
+    int      keyval;
     unsigned int   time;
 };
 
@@ -97,7 +99,7 @@ brush_draw (GtkWidget *widget)
   int size = shl_array_get_length (piboard.motions);
   if (!size)
     return;
-  struct PublishEvent *pe = SHL_ARRAY_AT(piboard.motions, struct PublishEvent, 0);
+  struct SerializEvent *pe = SHL_ARRAY_AT(piboard.motions, struct SerializEvent, 0);
   guint32 last = pe->time;
   double dtime;
   MyPaintRectangle roi;
@@ -108,7 +110,7 @@ brush_draw (GtkWidget *widget)
   mypaint_brush_new_stroke (piboard.brush);
   for (int i = 0; i < size; i++)
   {
-    pe = SHL_ARRAY_AT(piboard.motions, struct PublishEvent, i);
+    pe = SHL_ARRAY_AT(piboard.motions, struct SerializEvent, i);
     dtime = (double)(pe->time - last) / 1000;
     last = pe->time;
 
@@ -129,9 +131,34 @@ brush_draw (GtkWidget *widget)
 }
 
 static void 
-clear_surface ()
+clear_surface (GtkWidget *widget)
 {
   mypaint_resizable_tiled_surface_clear (piboard.surface);
+  gtk_widget_queue_draw (widget);
+}
+
+static gboolean
+key_press_event_cb (GtkWidget *widget,
+                    GdkEventKey *event,
+                    gpointer data)
+{
+  switch (event->keyval)
+  {
+    case GDK_KEY_c:
+         printf ("key pressed, key value: %d\n", event->keyval);
+         clear_surface(widget);
+         break;
+    default:
+         break;
+  }
+  if (!piboard.publisher)
+  {
+    struct SerializEvent pe;
+    pe.type = KEY_PRESSED;
+    pe.keyval = event->keyval;
+    nn_send (piboard.nn_socket, &pe, sizeof (struct SerializEvent), NN_DONTWAIT);
+  }
+  return FALSE;
 }
 
 static gboolean
@@ -139,12 +166,12 @@ motion_notify_event_cb (GtkWidget *widget,
                         GdkEventMotion *event,
                         gpointer        data)
 {
-  struct PublishEvent *pe;
+  struct SerializEvent *pe;
   if (data)
-    pe = (struct PublishEvent *)data;
+    pe = (struct SerializEvent *)data;
   else
   {
-    pe = (struct PublishEvent *)malloc (sizeof (struct PublishEvent) );
+    pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
     pe->type = MOTION;
     pe->x = event->x;
     pe->y = event->y;
@@ -158,7 +185,7 @@ motion_notify_event_cb (GtkWidget *widget,
   }
   shl_array_push (piboard.motions, pe);
   if (!piboard.publisher)
-    nn_send (piboard.nn_socket, pe, sizeof (struct PublishEvent), NN_DONTWAIT);
+    nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
 
   if (!data)
     free (pe);
@@ -171,7 +198,7 @@ button_press_event_cb (GtkWidget *widget,
                        GdkEventButton *event,
                        gpointer        data)
 {
-  struct PublishEvent pe;
+  struct SerializEvent pe;
   switch (event->button)
   {
     case GDK_BUTTON_PRIMARY:
@@ -181,12 +208,11 @@ button_press_event_cb (GtkWidget *widget,
       break;
     case GDK_BUTTON_SECONDARY:
       pe.type = BUTTON2_PRESSED;
-      clear_surface();
-      gtk_widget_queue_draw (widget);
+      clear_surface(widget);
       break;
   }
   if (!piboard.publisher)
-    nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
+    nn_send (piboard.nn_socket, &pe, sizeof (struct SerializEvent), NN_DONTWAIT);
 
   return TRUE;
 }
@@ -196,7 +222,7 @@ button_release_event_cb (GtkWidget *widget,
                        GdkEventButton *event,
                        gpointer        data)
 {
-  struct PublishEvent pe;
+  struct SerializEvent pe;
   if (event->state & GDK_BUTTON1_MASK)
   {
     g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (motion_notify_event_cb), NULL);
@@ -209,7 +235,7 @@ button_release_event_cb (GtkWidget *widget,
     return TRUE;
 
   if (!piboard.publisher)
-    nn_send (piboard.nn_socket, &pe, sizeof (struct PublishEvent), NN_DONTWAIT);
+    nn_send (piboard.nn_socket, &pe, sizeof (struct SerializEvent), NN_DONTWAIT);
   return TRUE;
 }
 
@@ -284,10 +310,11 @@ nn_sub (gpointer user_data)
     int bytes;
     void *msg = NULL;
     bytes = nn_recv (piboard.nn_socket, &msg, NN_MSG, NN_DONTWAIT);
-    if (bytes == sizeof(struct PublishEvent) )
+    if (bytes == sizeof(struct SerializEvent) )
     {
-        struct PublishEvent *event = (struct PublishEvent *)msg;
+        struct SerializEvent *event = (struct SerializEvent *)msg;
         GdkEventButton      button;
+        GdkEventKey         key;
         switch (event->type)
         {
             case MOTION:
@@ -320,6 +347,12 @@ nn_sub (gpointer user_data)
                 button_release_event_cb ((GtkWidget *)user_data,
                                        &button,
                                        NULL);
+                break;
+            case KEY_PRESSED:
+                key.keyval = event->keyval;
+                key_press_event_cb ((GtkWidget *)user_data,
+                                    &key,
+                                    NULL);
                 break;
             default:
                 break;
@@ -367,8 +400,12 @@ activate (GtkApplication *app,
                     G_CALLBACK (button_press_event_cb), NULL);
   g_signal_connect (drawing_area, "button-release-event",
                     G_CALLBACK (button_release_event_cb), NULL);
+  g_signal_connect (drawing_area, "key-press-event",
+                    G_CALLBACK (key_press_event_cb), NULL);
 
+  gtk_widget_set_can_focus (drawing_area, TRUE);
   gtk_widget_set_events (drawing_area, gtk_widget_get_events (drawing_area)
+                                     | GDK_KEY_PRESS_MASK
                                      | GDK_BUTTON_PRESS_MASK
                                      | GDK_BUTTON_RELEASE_MASK
                                      | GDK_POINTER_MOTION_MASK);
@@ -400,7 +437,7 @@ main (int    argc,
   int status;
 
   memset (&piboard, 0, sizeof (struct PiBoardApp));
-  shl_array_new (&piboard.motions, sizeof (struct PublishEvent), 1024);
+  shl_array_new (&piboard.motions, sizeof (struct SerializEvent), 1024);
 
   FILE *fp;
   fp = fopen ("/etc/piboard.conf", "r");
