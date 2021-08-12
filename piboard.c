@@ -145,7 +145,6 @@ key_press_event_cb (GtkWidget *widget,
   switch (event->keyval)
   {
     case GDK_KEY_c:
-         printf ("key pressed, key value: %d\n", event->keyval);
          clear_surface(widget);
          break;
     default:
