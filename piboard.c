@@ -46,6 +46,8 @@ struct PiBoardApp {
 	int	                     nn_socket;
         char                         *publisher;
         struct shl_array             *motions;
+        gboolean                     should_be_done;
+        GThread                      *poll_thread;        // poll thread 
 };
 
 struct PiBoardApp	piboard;
@@ -108,7 +110,7 @@ brush_draw (GtkWidget *widget)
   mypaint_surface_begin_atomic(surface);
   mypaint_brush_reset (piboard.brush);
   mypaint_brush_new_stroke (piboard.brush);
-  for (int i = 0; i < size; i++)
+  for (int i = 1; i < size; i++)
   {
     pe = SHL_ARRAY_AT(piboard.motions, struct SerializEvent, i);
     dtime = (double)(pe->time - last) / 1000;
@@ -126,8 +128,6 @@ brush_draw (GtkWidget *widget)
   mypaint_surface_end_atomic(surface, &roi);
   
   gtk_widget_queue_draw_area (widget, roi.x, roi.y, roi.width, roi.height);
-
-  //gdk_window_process_updates (widget->window, TRUE);
 }
 
 static void 
@@ -197,22 +197,24 @@ button_press_event_cb (GtkWidget *widget,
                        GdkEventButton *event,
                        gpointer        data)
 {
-  struct SerializEvent pe;
+  struct SerializEvent  *pe;
+  pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
   switch (event->button)
   {
     case GDK_BUTTON_PRIMARY:
-      pe.type = BUTTON1_PRESSED;
+      pe->type = BUTTON1_PRESSED;
       g_signal_connect (widget, "motion-notify-event",
                     G_CALLBACK (motion_notify_event_cb), NULL);
       break;
     case GDK_BUTTON_SECONDARY:
-      pe.type = BUTTON2_PRESSED;
+      pe->type = BUTTON2_PRESSED;
       clear_surface(widget);
       break;
   }
   if (!piboard.publisher)
-    nn_send (piboard.nn_socket, &pe, sizeof (struct SerializEvent), NN_DONTWAIT);
+    nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
 
+  free (pe);
   return TRUE;
 }
 
@@ -221,20 +223,26 @@ button_release_event_cb (GtkWidget *widget,
                        GdkEventButton *event,
                        gpointer        data)
 {
-  struct SerializEvent pe;
-  if (event->state & GDK_BUTTON1_MASK)
+  struct SerializEvent *pe;
+  pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
+  switch (event->button)
   {
-    g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (motion_notify_event_cb), NULL);
-    brush_draw (widget);
-    pe.type = BUTTON1_RELEASED;
+    case GDK_BUTTON_PRIMARY:
+      pe->type = BUTTON1_RELEASED;
+      brush_draw (widget);
+      g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (motion_notify_event_cb), NULL);
+      break;
+    case GDK_BUTTON_SECONDARY:
+      pe->type = BUTTON2_RELEASED;
+      break;
+    default:
+      break;
   }
-  else if (event->state & GDK_BUTTON2_MASK)
-    pe.type = BUTTON2_RELEASED;
-  else
-    return TRUE;
 
   if (!piboard.publisher)
-    nn_send (piboard.nn_socket, &pe, sizeof (struct SerializEvent), NN_DONTWAIT);
+    nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
+
+  free (pe);  
   return TRUE;
 }
 
@@ -242,13 +250,17 @@ static void
 close_window (GtkWidget *widget,
               gpointer   data)
 {
-  if (piboard.surface)
-    mypaint_surface_unref((MyPaintSurface *)piboard.surface);
-  if (piboard.brush)
-    mypaint_brush_unref(piboard.brush);
-  shl_array_free (piboard.motions);
-  nn_close(piboard.nn_socket);
-  g_application_quit(G_APPLICATION(data));
+  piboard.should_be_done = TRUE;
+  if (g_thread_join(piboard.poll_thread))
+  {
+    if (piboard.surface)
+      mypaint_surface_unref((MyPaintSurface *)piboard.surface);
+    if (piboard.brush)
+      mypaint_brush_unref(piboard.brush);
+    shl_array_free (piboard.motions);
+    nn_close(piboard.nn_socket);
+    g_application_quit(G_APPLICATION(data));
+  }
 }
 
 static gboolean
@@ -304,7 +316,7 @@ configure_event_cb (GtkWidget         *widget,
 }
 
 static gboolean
-nn_sub (gpointer user_data)
+nn_sub(GtkWidget *widget)
 {
     int bytes;
     void *msg = NULL;
@@ -317,39 +329,39 @@ nn_sub (gpointer user_data)
         switch (event->type)
         {
             case MOTION:
-                event->x *= gtk_widget_get_allocated_width ((GtkWidget *)user_data) / event->width;
-                event->y *= gtk_widget_get_allocated_height ((GtkWidget *)user_data) / event->height;
-                motion_notify_event_cb ((GtkWidget *)user_data,
+                event->x *= (double)gtk_widget_get_allocated_width (widget) / event->width;
+                event->y *= (double)gtk_widget_get_allocated_height (widget) / event->height;
+                motion_notify_event_cb (widget,
                                         NULL,
                                         event);
                 break;
             case BUTTON1_PRESSED:
                 button.button = GDK_BUTTON_PRIMARY;
-                button_press_event_cb ((GtkWidget *)user_data,
+                button_press_event_cb (widget,
                                        &button,
                                        NULL);
                 break;
             case BUTTON2_PRESSED:
                 button.button = GDK_BUTTON_SECONDARY;
-                button_press_event_cb ((GtkWidget *)user_data,
+                button_press_event_cb (widget,
                                        &button,
                                        NULL);
                 break;
             case BUTTON1_RELEASED:
-                button.state |= GDK_BUTTON1_MASK;
-                button_release_event_cb ((GtkWidget *)user_data,
+                button.button = GDK_BUTTON_PRIMARY;
+                button_release_event_cb (widget,
                                        &button,
                                        NULL);
                 break;
             case BUTTON2_RELEASED:
-                button.state |= GDK_BUTTON2_MASK;
-                button_release_event_cb ((GtkWidget *)user_data,
+                button.button = GDK_BUTTON_SECONDARY;
+                button_release_event_cb (widget,
                                        &button,
                                        NULL);
                 break;
             case KEY_PRESSED:
                 key.keyval = event->keyval;
-                key_press_event_cb ((GtkWidget *)user_data,
+                key_press_event_cb (widget,
                                     &key,
                                     NULL);
                 break;
@@ -362,14 +374,37 @@ nn_sub (gpointer user_data)
     return TRUE;
 }
 
+static void *
+on_poll(void *user_data)
+{
+  int ret;
+  while (1)
+  {
+    if (piboard.should_be_done)
+      break;
+    if (piboard.nn_socket < 0)
+      break;
+    struct nn_pollfd pfd;
+    pfd.fd = piboard.nn_socket;
+    pfd.events = NN_POLLIN;
+    ret = nn_poll (&pfd, 1, 2000);
+    if (ret == 0) // Timeout
+      continue;
+    if (ret == -1) // Error
+      continue;
+    if (pfd.revents & NN_POLLIN)
+    {  
+      nn_sub (user_data);
+    }  
+  }
+  return NULL;
+}
+
 static void
 activate (GtkApplication *app,
           gpointer        user_data)
 {
   GtkWidget *window;
-  GtkWidget *frame;
-  GtkWidget *drawing_area;
-
   window = gtk_application_window_new (app);
   if (piboard.publisher)
     gtk_window_set_title (GTK_WINDOW (window), "PiBoard-Subcriber");
@@ -381,13 +416,9 @@ activate (GtkApplication *app,
 
   gtk_container_set_border_width (GTK_CONTAINER (window), 8);
 
-  frame = gtk_frame_new (NULL);
-  gtk_frame_set_shadow_type (GTK_FRAME (frame), GTK_SHADOW_IN);
-  gtk_container_add (GTK_CONTAINER (window), frame);
+  GtkWidget *drawing_area = gtk_drawing_area_new ();
 
-  drawing_area = gtk_drawing_area_new ();
-
-  gtk_container_add (GTK_CONTAINER (frame), drawing_area);
+  gtk_container_add (GTK_CONTAINER (window), drawing_area);
 
   /* Signals used to handle the backing surface */
   g_signal_connect (drawing_area, "configure-event",
@@ -403,11 +434,8 @@ activate (GtkApplication *app,
                     G_CALLBACK (key_press_event_cb), NULL);
 
   gtk_widget_set_can_focus (drawing_area, TRUE);
-  gtk_widget_set_events (drawing_area, gtk_widget_get_events (drawing_area)
-                                     | GDK_KEY_PRESS_MASK
-                                     | GDK_BUTTON_PRESS_MASK
-                                     | GDK_BUTTON_RELEASE_MASK
-                                     | GDK_POINTER_MOTION_MASK);
+  gtk_widget_add_events (drawing_area, 
+                         GDK_KEY_PRESS_MASK | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
   if (!piboard.publisher)
   {
     piboard.nn_socket = nn_socket (AF_SP, NN_PUB);
@@ -421,7 +449,8 @@ activate (GtkApplication *app,
     memset (url, 0, 100);
     sprintf (url, "tcp://%s:7789", piboard.publisher);
     nn_connect (piboard.nn_socket, url);
-    g_timeout_add (10, nn_sub, drawing_area);
+    piboard.should_be_done = FALSE;
+    piboard.poll_thread = g_thread_new(NULL,(GThreadFunc)on_poll, drawing_area);
   }
   
   gtk_widget_show_all (window);
