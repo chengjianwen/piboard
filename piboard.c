@@ -46,7 +46,7 @@ struct PiBoardApp {
 	int	                     nn_socket;
         char                         *publisher;
         struct shl_array             *motions;
-        gboolean                     should_be_done;
+        gboolean                     polling;
         GThread                      *poll_thread;        // poll thread 
 };
 
@@ -250,7 +250,7 @@ static void
 close_window (GtkWidget *widget,
               gpointer   data)
 {
-  piboard.should_be_done = TRUE;
+  piboard.polling = FALSE;
   if (g_thread_join(piboard.poll_thread))
   {
     if (piboard.surface)
@@ -378,10 +378,8 @@ static void *
 on_poll(void *user_data)
 {
   int ret;
-  while (1)
+  while (piboard.polling)
   {
-    if (piboard.should_be_done)
-      break;
     if (piboard.nn_socket < 0)
       break;
     struct nn_pollfd pfd;
@@ -449,7 +447,7 @@ activate (GtkApplication *app,
     memset (url, 0, 100);
     sprintf (url, "tcp://%s:7789", piboard.publisher);
     nn_connect (piboard.nn_socket, url);
-    piboard.should_be_done = FALSE;
+    piboard.polling = TRUE;
     piboard.poll_thread = g_thread_new(NULL,(GThreadFunc)on_poll, drawing_area);
   }
   
