@@ -48,6 +48,7 @@ struct PiBoardApp {
         struct shl_array             *motions;
         gboolean                     polling;
         GThread                      *poll_thread;        // poll thread 
+        FILE                         *saved;
 };
 
 struct PiBoardApp	piboard;
@@ -130,6 +131,7 @@ brush_draw (GtkWidget *widget)
   gtk_widget_queue_draw_area (widget, roi.x, roi.y, roi.width, roi.height);
 }
 
+
 static void 
 clear_surface (GtkWidget *widget)
 {
@@ -152,10 +154,15 @@ key_press_event_cb (GtkWidget *widget,
   }
   if (!piboard.publisher)
   {
-    struct SerializEvent pe;
-    pe.type = KEY_PRESSED;
-    pe.keyval = event->keyval;
-    nn_send (piboard.nn_socket, &pe, sizeof (struct SerializEvent), NN_DONTWAIT);
+    struct SerializEvent *pe;
+    pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
+    pe->type = KEY_PRESSED;
+    pe->keyval = event->keyval;
+    pe->time = event->time;
+    nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
+    fwrite (pe, sizeof (struct SerializEvent), 1, piboard.saved);
+    fflush (piboard.saved);
+    free (pe);
   }
   return FALSE;
 }
@@ -184,7 +191,11 @@ motion_notify_event_cb (GtkWidget *widget,
   }
   shl_array_push (piboard.motions, pe);
   if (!piboard.publisher)
+  {
     nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
+    fwrite (pe, sizeof (struct SerializEvent), 1, piboard.saved);
+    fflush (piboard.saved);
+  }
 
   if (!data)
     free (pe);
@@ -197,22 +208,29 @@ button_press_event_cb (GtkWidget *widget,
                        GdkEventButton *event,
                        gpointer        data)
 {
-  struct SerializEvent  *pe;
+  struct SerializEvent *pe;
+
   pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
   switch (event->button)
   {
     case GDK_BUTTON_PRIMARY:
       pe->type = BUTTON1_PRESSED;
+      pe->time = event->time;
       g_signal_connect (widget, "motion-notify-event",
                     G_CALLBACK (motion_notify_event_cb), NULL);
       break;
     case GDK_BUTTON_SECONDARY:
       pe->type = BUTTON2_PRESSED;
+      pe->time = event->time;
       clear_surface(widget);
       break;
   }
   if (!piboard.publisher)
+  {
     nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
+    fwrite (pe, sizeof (struct SerializEvent), 1, piboard.saved);
+    fflush (piboard.saved);
+  }
 
   free (pe);
   return TRUE;
@@ -229,18 +247,24 @@ button_release_event_cb (GtkWidget *widget,
   {
     case GDK_BUTTON_PRIMARY:
       pe->type = BUTTON1_RELEASED;
+      pe->time = event->time;
       brush_draw (widget);
       g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (motion_notify_event_cb), NULL);
       break;
     case GDK_BUTTON_SECONDARY:
       pe->type = BUTTON2_RELEASED;
+      pe->time = event->time;
       break;
     default:
       break;
   }
 
   if (!piboard.publisher)
+  {
     nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
+    fwrite (pe, sizeof (struct SerializEvent), 1, piboard.saved);
+    fflush (piboard.saved);
+  }
 
   free (pe);  
   return TRUE;
@@ -250,6 +274,8 @@ static void
 close_window (GtkWidget *widget,
               gpointer   data)
 {
+  if (piboard.saved)
+    fclose (piboard.saved);
   piboard.polling = FALSE;
   if (g_thread_join(piboard.poll_thread))
   {
@@ -438,6 +464,13 @@ activate (GtkApplication *app,
   {
     piboard.nn_socket = nn_socket (AF_SP, NN_PUB);
     nn_bind (piboard.nn_socket, "tcp://*:7789");
+    piboard.saved = fopen (".saved.txt", "w");
+    struct SerializEvent *pe;
+    pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
+    pe->time =  (unsigned int)(g_get_monotonic_time() / 1000);
+    fwrite (pe, sizeof (struct SerializEvent), 1, piboard.saved);
+    fflush (piboard.saved);
+    free (pe);
   }
   else
   {
