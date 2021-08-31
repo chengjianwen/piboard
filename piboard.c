@@ -92,7 +92,6 @@ screen_draw (GtkWidget *widget,
       mypaint_tiled_surface_tile_request_end(surface, &request);
     }
   }
-  piboard.motions->length = 0;
   return G_SOURCE_CONTINUE;
 }
 
@@ -127,6 +126,7 @@ brush_draw (GtkWidget *widget)
                             dtime);
   }
   mypaint_surface_end_atomic(surface, &roi);
+  piboard.motions->length = 0;
   
   gtk_widget_queue_draw_area (widget, roi.x, roi.y, roi.width, roi.height);
 }

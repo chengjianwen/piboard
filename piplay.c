@@ -73,7 +73,7 @@ main (int    argc,
       usleep ((pe->time - last) * 1000);
     }
     last = pe->time;
-    pe->time += delay;
+//    pe->time += delay;
     nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
   }
   nn_close(piboard.nn_socket);
