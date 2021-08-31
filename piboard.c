@@ -23,16 +23,17 @@ typedef enum {
     BUTTON2_PRESSED,
     BUTTON1_RELEASED,
     BUTTON2_RELEASED,
-    KEY_PRESSED
+    KEY_PRESSED,
+    NONE
 } PUBLISH_EVENT_TYPE;
 
 struct SerializEvent {
     PUBLISH_EVENT_TYPE type;
-    gdouble x;
-    gdouble y;
-    gdouble pressure;
-    gdouble xtilt;
-    gdouble ytilt;
+    double x;
+    double y;
+    double pressure;
+    double xtilt;
+    double ytilt;
     unsigned int width;
     unsigned int height;
     int      button;
@@ -467,6 +468,7 @@ activate (GtkApplication *app,
     piboard.saved = fopen (".saved.txt", "w");
     struct SerializEvent *pe;
     pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
+    pe->type = NONE;
     pe->time =  (unsigned int)(g_get_monotonic_time() / 1000);
     fwrite (pe, sizeof (struct SerializEvent), 1, piboard.saved);
     fflush (piboard.saved);

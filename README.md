@@ -19,7 +19,7 @@ piplay可以重新运行绘制端的绘制操作。
    编译命令为：
 
       gcc -o piboard `pkg-config --cflags gtk+-3.0 libmypaint nanomsg` -lm piboard.c
-      gcc -o piplay `pkg-config --cflags gdk-3.0 nanomsg` piplay.c
+      gcc -o piplay `pkg-config --cflags nanomsg` piplay.c
 
 ##程序运行：
 

@@ -6,7 +6,7 @@ piboard: piboard.o mypaint-resizable-tiled-surface.o
 	$(CC) `pkg-config --libs gtk+-3.0 libmypaint nanomsg` -lm -o $@ $^
 
 piplay: piplay.o
-	$(CC) `pkg-config --libs gdk-3.0 nanomsg` -o $@ $^
+	$(CC) `pkg-config --libs nanomsg` -o $@ $^
 
 clean:
 	rm -f piboard.o mypaint-resizable-tiled-surface.o piboard piplay

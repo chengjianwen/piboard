@@ -4,11 +4,12 @@
  *     作者：成建文 <chengjianwen@gmail.com>
  */
 
-#include <gtk/gtk.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
 #include <nanomsg/nn.h>
 #include <nanomsg/pubsub.h>
-#include <ctype.h>
-#include <math.h>
 
 #pragma pack(4)
 
@@ -18,16 +19,17 @@ typedef enum {
     BUTTON2_PRESSED,
     BUTTON1_RELEASED,
     BUTTON2_RELEASED,
-    KEY_PRESSED
+    KEY_PRESSED,
+    NONE
 } PUBLISH_EVENT_TYPE;
 
 struct SerializEvent {
     PUBLISH_EVENT_TYPE type;
-    gdouble x;
-    gdouble y;
-    gdouble pressure;
-    gdouble xtilt;
-    gdouble ytilt;
+    double x;
+    double y;
+    double pressure;
+    double xtilt;
+    double ytilt;
     unsigned int width;
     unsigned int height;
     int      button;
@@ -61,11 +63,6 @@ main (int    argc,
   pe = malloc (sizeof (struct SerializEvent) );
   
   unsigned int last = 0;
-  unsigned int delay = 0;
-  if (fread (pe, sizeof (struct SerializEvent), 1, piboard.saved) == 1)
-  {
-    delay = (unsigned int)(g_get_monotonic_time() / 1000) - pe->time;
-  }
   while (fread (pe, sizeof (struct SerializEvent), 1, piboard.saved) == 1)
   {
     if (last && pe->time - last > 0)
@@ -73,7 +70,6 @@ main (int    argc,
       usleep ((pe->time - last) * 1000);
     }
     last = pe->time;
-//    pe->time += delay;
     nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
   }
   nn_close(piboard.nn_socket);
