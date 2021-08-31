@@ -434,7 +434,7 @@ activate (GtkApplication *app,
     gtk_window_set_title (GTK_WINDOW (window), "PiBoard-Subcriber");
   else
     gtk_window_set_title (GTK_WINDOW (window), "PiBoard-Publisher");
-  gtk_widget_set_size_request (window, 300, 200);
+  gtk_window_fullscreen(GTK_WINDOW(window));
 
   g_signal_connect (window, "destroy", G_CALLBACK (close_window), user_data);
 
