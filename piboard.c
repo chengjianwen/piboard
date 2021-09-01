@@ -42,6 +42,7 @@ struct SerializEvent {
 };
 
 struct PiBoardApp {
+        GtkApplication *app;
 	MyPaintResizableTiledSurface *surface;
 	MyPaintBrush                 *brush;
 	int	                     nn_socket;
@@ -149,6 +150,9 @@ key_press_event_cb (GtkWidget *widget,
   {
     case GDK_KEY_c:
          clear_surface(widget);
+         break;
+    case GDK_KEY_q:
+         g_application_quit(G_APPLICATION(piboard.app));
          break;
     default:
          break;
@@ -286,7 +290,7 @@ close_window (GtkWidget *widget,
       mypaint_brush_unref(piboard.brush);
     shl_array_free (piboard.motions);
     nn_close(piboard.nn_socket);
-    g_application_quit(G_APPLICATION(data));
+    g_application_quit(G_APPLICATION(piboard.app));
   }
 }
 
@@ -437,7 +441,7 @@ activate (GtkApplication *app,
     gtk_window_set_title (GTK_WINDOW (window), "PiBoard-Publisher");
   gtk_window_fullscreen(GTK_WINDOW(window));
 
-  g_signal_connect (window, "destroy", G_CALLBACK (close_window), user_data);
+  g_signal_connect (window, "destroy", G_CALLBACK (close_window), NULL);
 
   gtk_container_set_border_width (GTK_CONTAINER (window), 8);
 
@@ -494,7 +498,6 @@ int
 main (int    argc,
       char **argv)
 {
-  GtkApplication *app;
   int status;
 
   memset (&piboard, 0, sizeof (struct PiBoardApp));
@@ -530,12 +533,12 @@ main (int    argc,
   char	str[128];
   memset (str, 0, 128);
   sprintf (str, "com.pi-classroom.piboard_%04d", getpid() );
-  app = gtk_application_new (str, G_APPLICATION_FLAGS_NONE);
+  piboard.app = gtk_application_new (str, G_APPLICATION_FLAGS_NONE);
 
-  g_signal_connect (app, "activate", G_CALLBACK (activate), app);
+  g_signal_connect (piboard.app, "activate", G_CALLBACK (activate), NULL);
 
-  status = g_application_run (G_APPLICATION (app), 0, NULL);
-  g_object_unref (app);
+  status = g_application_run (G_APPLICATION (piboard.app), 0, NULL);
+  g_object_unref (piboard.app);
 
   return status;
 }
