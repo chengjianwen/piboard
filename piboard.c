@@ -157,7 +157,7 @@ key_press_event_cb (GtkWidget *widget,
     default:
          break;
   }
-  if (!piboard.publisher)
+  if (!piboard.publisher && event->keyval != GDK_KEY_q)
   {
     struct SerializEvent *pe;
     pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
