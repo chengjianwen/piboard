@@ -10,6 +10,7 @@
 #include <nanomsg/pubsub.h>
 #include <ctype.h>
 #include <math.h>
+#include <pthread.h>
 #include "mypaint-resizable-tiled-surface.h"
 #include "shl_array.h"
 
@@ -19,25 +20,30 @@
 
 typedef enum {
     MOTION,
-    BUTTON1_PRESSED,
-    BUTTON2_PRESSED,
-    BUTTON1_RELEASED,
-    BUTTON2_RELEASED,
-    KEY_PRESSED,
+    PRESSED,
+    RELEASED,
+    KEY,
     NONE
 } PUBLISH_EVENT_TYPE;
 
 struct SerializEvent {
     PUBLISH_EVENT_TYPE type;
-    double x;
-    double y;
-    double pressure;
-    double xtilt;
-    double ytilt;
-    unsigned int width;
-    unsigned int height;
-    int      button;
-    int      keyval;
+    union {
+        struct {
+            double x;
+            double y;
+            double pressure;
+            double xtilt;
+            double ytilt;
+        } motion;
+        struct {
+            int width;
+            int height;
+        } pressed;
+        struct {
+            int keyval;
+        } key;
+    };
     unsigned int   time;
 };
 
@@ -48,23 +54,24 @@ struct PiBoardApp {
 	int	                     nn_socket;
         char                         *publisher;
         struct shl_array             *motions;
-        gboolean                     polling;
-        GThread                      *poll_thread;        // poll thread 
-        FILE                         *saved;
+        FILE                         *saved;		// track file
+        int                          remote_width;	// remote drawing_area width
+        int                          remote_height;	// remote drawing_area height
 };
 
 struct PiBoardApp	piboard;
 
 static gboolean
 screen_draw (GtkWidget *widget,
-         cairo_t   *cr, gpointer   data)
+             cairo_t *cr,
+             gpointer   data)
 {
-  const int width = mypaint_resizable_tiled_surface_get_width (piboard.surface);
-  const int height = mypaint_resizable_tiled_surface_get_height (piboard.surface);
+  int width = mypaint_resizable_tiled_surface_get_width (piboard.surface);
+  int height = mypaint_resizable_tiled_surface_get_height (piboard.surface);
 
-  const int tile_size = MYPAINT_TILE_SIZE;
-  const int number_of_tile_rows = mypaint_resizable_tiled_surface_number_of_tile_rows (piboard.surface);
-  const int tiles_per_rows = mypaint_resizable_tiled_surface_tiles_per_rows (piboard.surface);
+  int tile_size = MYPAINT_TILE_SIZE;
+  int number_of_tile_rows = mypaint_resizable_tiled_surface_number_of_tile_rows (piboard.surface);
+  int tiles_per_rows = mypaint_resizable_tiled_surface_tiles_per_rows (piboard.surface);
   MyPaintTiledSurface *surface = (MyPaintTiledSurface *)piboard.surface;
 
   for (int tx = floor((double)surface->dirty_bbox.x / tile_size); tx < ceil((double)(surface->dirty_bbox.x + surface->dirty_bbox.width) / tile_size); tx++)
@@ -94,14 +101,14 @@ screen_draw (GtkWidget *widget,
       mypaint_tiled_surface_tile_request_end(surface, &request);
     }
   }
-  return G_SOURCE_CONTINUE;
+  return FALSE;
 }
 
 static void
 brush_draw (GtkWidget *widget)
 {
-  int size = shl_array_get_length (piboard.motions);
-  if (!size)
+  int len = shl_array_get_length (piboard.motions);
+  if (!len)
     return;
   struct SerializEvent *pe = SHL_ARRAY_AT(piboard.motions, struct SerializEvent, 0);
   guint32 last = pe->time;
@@ -112,7 +119,7 @@ brush_draw (GtkWidget *widget)
   mypaint_surface_begin_atomic(surface);
   mypaint_brush_reset (piboard.brush);
   mypaint_brush_new_stroke (piboard.brush);
-  for (int i = 1; i < size; i++)
+  for (int i = 1; i < len; i++)
   {
     pe = SHL_ARRAY_AT(piboard.motions, struct SerializEvent, i);
     dtime = (double)(pe->time - last) / 1000;
@@ -120,17 +127,17 @@ brush_draw (GtkWidget *widget)
 
     mypaint_brush_stroke_to (piboard.brush,
                             surface,
-                            pe->x,
-                            pe->y,
-                            pe->pressure,
-                            pe->xtilt,
-                            pe->ytilt,
+                            pe->motion.x,
+                            pe->motion.y,
+                            pe->motion.pressure,
+                            pe->motion.xtilt,
+                            pe->motion.ytilt,
                             dtime);
   }
   mypaint_surface_end_atomic(surface, &roi);
   piboard.motions->length = 0;
   
-  gtk_widget_queue_draw_area (widget, roi.x, roi.y, roi.width, roi.height);
+  gtk_widget_queue_draw_area(widget, roi.x, roi.y, roi.width, roi.height);
 }
 
 
@@ -161,11 +168,13 @@ key_press_event_cb (GtkWidget *widget,
   {
     struct SerializEvent *pe;
     pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
-    pe->type = KEY_PRESSED;
-    pe->keyval = event->keyval;
+    pe->type = KEY;
+    pe->key.keyval = event->keyval;
     pe->time = event->time;
     nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
-    fwrite (pe, sizeof (struct SerializEvent), 1, piboard.saved);
+    fprintf (piboard.saved, "K %d %u\n",
+             event->keyval,
+             event->time);
     fflush (piboard.saved);
     free (pe);
   }
@@ -184,21 +193,25 @@ motion_notify_event_cb (GtkWidget *widget,
   {
     pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
     pe->type = MOTION;
-    pe->x = event->x;
-    pe->y = event->y;
+    pe->motion.x = event->x;
+    pe->motion.y = event->y;
     gdouble pressure, xtilt, ytilt;
-    pe->pressure = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_PRESSURE, &pressure) ? pressure : 1.0;
-    pe->xtilt = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_XTILT, &xtilt) ? xtilt : 0.0;
-    pe->ytilt = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_YTILT, &ytilt) ? ytilt : 0.0;
-    pe->width = gtk_widget_get_allocated_width (widget);
-    pe->height = gtk_widget_get_allocated_height (widget);
+    pe->motion.pressure = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_PRESSURE, &pressure) ? pressure : 1.0;
+    pe->motion.xtilt = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_XTILT, &xtilt) ? xtilt : 0.0;
+    pe->motion.ytilt = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_YTILT, &ytilt) ? ytilt : 0.0;
     pe->time = event->time;
   }
   shl_array_push (piboard.motions, pe);
   if (!piboard.publisher)
   {
     nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
-    fwrite (pe, sizeof (struct SerializEvent), 1, piboard.saved);
+    fprintf (piboard.saved, "M %.02f %.02f %.02f %.02f %.02f %u\n",
+             pe->motion.x,
+             pe->motion.y,
+             pe->motion.pressure,
+             pe->motion.xtilt,
+             pe->motion.ytilt,
+             pe->time);
     fflush (piboard.saved);
   }
 
@@ -219,21 +232,23 @@ button_press_event_cb (GtkWidget *widget,
   switch (event->button)
   {
     case GDK_BUTTON_PRIMARY:
-      pe->type = BUTTON1_PRESSED;
+      pe->type = PRESSED;
+      pe->pressed.width = gtk_widget_get_allocated_width (widget);
+      pe->pressed.height = gtk_widget_get_allocated_height (widget);
       pe->time = event->time;
       g_signal_connect (widget, "motion-notify-event",
                     G_CALLBACK (motion_notify_event_cb), NULL);
       break;
-    case GDK_BUTTON_SECONDARY:
-      pe->type = BUTTON2_PRESSED;
-      pe->time = event->time;
-      clear_surface(widget);
+    default:
       break;
   }
   if (!piboard.publisher)
   {
     nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
-    fwrite (pe, sizeof (struct SerializEvent), 1, piboard.saved);
+    fprintf (piboard.saved, "P %d %d %u\n",
+             pe->pressed.width,
+             pe->pressed.height,
+             pe->time);
     fflush (piboard.saved);
   }
 
@@ -251,14 +266,10 @@ button_release_event_cb (GtkWidget *widget,
   switch (event->button)
   {
     case GDK_BUTTON_PRIMARY:
-      pe->type = BUTTON1_RELEASED;
+      pe->type = RELEASED;
       pe->time = event->time;
       brush_draw (widget);
       g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (motion_notify_event_cb), NULL);
-      break;
-    case GDK_BUTTON_SECONDARY:
-      pe->type = BUTTON2_RELEASED;
-      pe->time = event->time;
       break;
     default:
       break;
@@ -267,7 +278,8 @@ button_release_event_cb (GtkWidget *widget,
   if (!piboard.publisher)
   {
     nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
-    fwrite (pe, sizeof (struct SerializEvent), 1, piboard.saved);
+    fprintf (piboard.saved, "R %u\n",
+             pe->time);
     fflush (piboard.saved);
   }
 
@@ -281,17 +293,13 @@ close_window (GtkWidget *widget,
 {
   if (piboard.saved)
     fclose (piboard.saved);
-  piboard.polling = FALSE;
-  if (g_thread_join(piboard.poll_thread))
-  {
-    if (piboard.surface)
-      mypaint_surface_unref((MyPaintSurface *)piboard.surface);
-    if (piboard.brush)
-      mypaint_brush_unref(piboard.brush);
-    shl_array_free (piboard.motions);
-    nn_close(piboard.nn_socket);
-    g_application_quit(G_APPLICATION(piboard.app));
-  }
+  if (piboard.surface)
+    mypaint_surface_unref((MyPaintSurface *)piboard.surface);
+  if (piboard.brush)
+    mypaint_brush_unref(piboard.brush);
+  shl_array_free (piboard.motions);
+  nn_close(piboard.nn_socket);
+  g_application_quit(G_APPLICATION(piboard.app));
 }
 
 static gboolean
@@ -347,9 +355,10 @@ configure_event_cb (GtkWidget         *widget,
 }
 
 static gboolean
-nn_sub(GtkWidget *widget)
+nn_sub(gpointer data)
 {
     int bytes;
+    GtkWidget *widget = data;
     void *msg = NULL;
     bytes = nn_recv (piboard.nn_socket, &msg, NN_MSG, NN_DONTWAIT);
     if (bytes == sizeof(struct SerializEvent) )
@@ -360,38 +369,31 @@ nn_sub(GtkWidget *widget)
         switch (event->type)
         {
             case MOTION:
-                event->x *= (double)gtk_widget_get_allocated_width (widget) / event->width;
-                event->y *= (double)gtk_widget_get_allocated_height (widget) / event->height;
+                event->motion.x *= (double)gtk_widget_get_allocated_width (widget) / piboard.remote_width;
+                event->motion.y *= (double)gtk_widget_get_allocated_height (widget) / piboard.remote_height;
                 motion_notify_event_cb (widget,
                                         NULL,
                                         event);
                 break;
-            case BUTTON1_PRESSED:
+            case PRESSED:
                 button.button = GDK_BUTTON_PRIMARY;
+                button.time = event->time;
+                piboard.remote_width = event->pressed.width;
+                piboard.remote_height = event->pressed.height;
                 button_press_event_cb (widget,
                                        &button,
                                        NULL);
                 break;
-            case BUTTON2_PRESSED:
-                button.button = GDK_BUTTON_SECONDARY;
-                button_press_event_cb (widget,
-                                       &button,
-                                       NULL);
-                break;
-            case BUTTON1_RELEASED:
+            case RELEASED:
                 button.button = GDK_BUTTON_PRIMARY;
+                button.time = event->time;
                 button_release_event_cb (widget,
                                        &button,
                                        NULL);
                 break;
-            case BUTTON2_RELEASED:
-                button.button = GDK_BUTTON_SECONDARY;
-                button_release_event_cb (widget,
-                                       &button,
-                                       NULL);
-                break;
-            case KEY_PRESSED:
-                key.keyval = event->keyval;
+            case KEY:
+                key.keyval = event->key.keyval;
+                key.time = event->time;
                 key_press_event_cb (widget,
                                     &key,
                                     NULL);
@@ -401,32 +403,7 @@ nn_sub(GtkWidget *widget)
         }
         nn_freemsg (msg);
     }
-
     return TRUE;
-}
-
-static void *
-on_poll(void *user_data)
-{
-  int ret;
-  while (piboard.polling)
-  {
-    if (piboard.nn_socket < 0)
-      break;
-    struct nn_pollfd pfd;
-    pfd.fd = piboard.nn_socket;
-    pfd.events = NN_POLLIN;
-    ret = nn_poll (&pfd, 1, 2000);
-    if (ret == 0) // Timeout
-      continue;
-    if (ret == -1) // Error
-      continue;
-    if (pfd.revents & NN_POLLIN)
-    {  
-      nn_sub (user_data);
-    }  
-  }
-  return NULL;
 }
 
 static void
@@ -474,7 +451,8 @@ activate (GtkApplication *app,
     pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
     pe->type = NONE;
     pe->time =  (unsigned int)(g_get_monotonic_time() / 1000);
-    fwrite (pe, sizeof (struct SerializEvent), 1, piboard.saved);
+    fprintf (piboard.saved, "N %u\n",
+             pe->time);
     fflush (piboard.saved);
     free (pe);
   }
@@ -482,12 +460,11 @@ activate (GtkApplication *app,
   {
     piboard.nn_socket = nn_socket (AF_SP, NN_SUB);
     nn_setsockopt(piboard.nn_socket, NN_SUB, NN_SUB_SUBSCRIBE, "", 0);
+    g_idle_add (nn_sub, drawing_area);
     char url[100];
     memset (url, 0, 100);
     sprintf (url, "tcp://%s:7789", piboard.publisher);
     nn_connect (piboard.nn_socket, url);
-    piboard.polling = TRUE;
-    piboard.poll_thread = g_thread_new(NULL,(GThreadFunc)on_poll, drawing_area);
   }
   
   gtk_widget_show_all (window);
@@ -508,23 +485,19 @@ main (int    argc,
   if (fp)
   {
     char  buf[1024];
-    char  *p;
+    char  *p, *p1;
     while (fgets (buf, 1024, fp) != NULL)
     {
-        if (buf[0] == '#')
-            continue;
-        // trim the string
-        for (int i = strlen(buf) - 1; i >= 0; i--)
-            if (isspace (buf[i]))
-                buf[i] = '\0';
         p = buf;
-        for (int i = 0; i < strlen(buf); i++)
-            if (isspace (buf[i]))
-                p++;
-        if (strlen(p) == 0)
-            continue;
-        piboard.publisher = strdup (p);
-        // only one line is ok
+        while (isspace((unsigned char)*p))
+          p++;
+        if (*p == 0 || *p == '#')
+          continue;
+        p1 = p + strlen(p) - 1;
+        while (p1 > p && isspace((unsigned char)*p1))
+          p1--;
+        piboard.publisher = strndup (p, p1 - p + 1);
+        // only one line
         break;
     }
     fclose (fp);

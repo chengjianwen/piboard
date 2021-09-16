@@ -15,25 +15,30 @@
 
 typedef enum {
     MOTION,
-    BUTTON1_PRESSED,
-    BUTTON2_PRESSED,
-    BUTTON1_RELEASED,
-    BUTTON2_RELEASED,
-    KEY_PRESSED,
+    PRESSED,
+    RELEASED,
+    KEY,
     NONE
 } PUBLISH_EVENT_TYPE;
 
 struct SerializEvent {
     PUBLISH_EVENT_TYPE type;
-    double x;
-    double y;
-    double pressure;
-    double xtilt;
-    double ytilt;
-    unsigned int width;
-    unsigned int height;
-    int      button;
-    int      keyval;
+    union {
+        struct {
+            double x;
+            double y;
+            double pressure;
+            double xtilt;
+            double ytilt;
+        } motion;
+        struct {
+            int width;
+            int height;
+        } pressed;
+        struct {
+            int keyval;
+        } key;
+    };
     unsigned int   time;
 };
 
@@ -63,8 +68,43 @@ main (int    argc,
   pe = malloc (sizeof (struct SerializEvent) );
   
   unsigned int last = 0;
-  while (fread (pe, sizeof (struct SerializEvent), 1, piboard.saved) == 1)
+  char  buf[1024];
+  memset (buf, 0, 1024);
+  while (fgets(buf, 1024, piboard.saved) != NULL)
   {
+    switch (buf[0])
+    {
+      case 'P':
+        pe->type = PRESSED;
+        sscanf (buf + 2, "%d %d %u", &pe->pressed.width, &pe->pressed.height, &pe->time);
+        break;
+      case 'R':
+        pe->type = RELEASED;
+        sscanf (buf + 2, "%u", &pe->time);
+        break;
+      case 'K':
+        pe->type = KEY;
+        sscanf (buf + 2, "%u %u", &pe->key.keyval, &pe->time);
+        break;
+      case 'M':
+        pe->type = MOTION;
+        sscanf (buf + 2, 
+                "%lf %lf %lf %lf %lf %u",
+                &pe->motion.x,
+                &pe->motion.y,
+                &pe->motion.pressure,
+                &pe->motion.xtilt,
+                &pe->motion.ytilt,
+                &pe->time);
+        break;
+      case 'N':
+        pe->type = NONE;
+        sscanf (buf + 2, "%u", &pe->time);
+        break;
+     default:
+        break;
+    }
+    memset (buf, 0, 1024);
     if (last && pe->time - last > 0)
     {
       usleep ((pe->time - last) * 1000);

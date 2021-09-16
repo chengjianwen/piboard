@@ -10,7 +10,7 @@ piplay可以重新运行绘制端的绘制操作。
 
    程序编译需要预先安装如下的开发库(在Debian系统下)：
 
-      libgtk-3.0-dev
+      libgtk-3-dev
 
       libnanomsg-dev
 
