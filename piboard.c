@@ -20,8 +20,7 @@
 
 typedef enum {
     MOTION,
-    PRESSED,
-    RELEASED,
+    DRAW,
     KEY,
     NONE
 } PUBLISH_EVENT_TYPE;
@@ -39,7 +38,7 @@ struct SerializEvent {
         struct {
             int width;
             int height;
-        } pressed;
+        } draw;
         struct {
             int keyval;
         } key;
@@ -55,8 +54,6 @@ struct PiBoardApp {
         char                         *publisher;
         struct shl_array             *motions;
         FILE                         *saved;		// track file
-        int                          remote_width;	// remote drawing_area width
-        int                          remote_height;	// remote drawing_area height
 };
 
 struct PiBoardApp	piboard;
@@ -164,7 +161,7 @@ key_press_event_cb (GtkWidget *widget,
     default:
          break;
   }
-  if (!piboard.publisher && event->keyval != GDK_KEY_q)
+  if (!piboard.publisher)
   {
     struct SerializEvent *pe;
     pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
@@ -178,7 +175,7 @@ key_press_event_cb (GtkWidget *widget,
     fflush (piboard.saved);
     free (pe);
   }
-  return FALSE;
+  return TRUE;
 }
 
 static gboolean
@@ -186,12 +183,9 @@ motion_notify_event_cb (GtkWidget *widget,
                         GdkEventMotion *event,
                         gpointer        data)
 {
-  struct SerializEvent *pe;
-  if (data)
-    pe = (struct SerializEvent *)data;
-  else
+  if (event->state & GDK_BUTTON1_MASK)
   {
-    pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
+    struct SerializEvent *pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
     pe->type = MOTION;
     pe->motion.x = event->x;
     pe->motion.y = event->y;
@@ -200,59 +194,23 @@ motion_notify_event_cb (GtkWidget *widget,
     pe->motion.xtilt = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_XTILT, &xtilt) ? xtilt : 0.0;
     pe->motion.ytilt = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_YTILT, &ytilt) ? ytilt : 0.0;
     pe->time = event->time;
-  }
-  shl_array_push (piboard.motions, pe);
-  if (!piboard.publisher)
-  {
-    nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
-    fprintf (piboard.saved, "M %.02f %.02f %.02f %.02f %.02f %u\n",
-             pe->motion.x,
-             pe->motion.y,
-             pe->motion.pressure,
-             pe->motion.xtilt,
-             pe->motion.ytilt,
-             pe->time);
-    fflush (piboard.saved);
-  }
 
-  if (!data)
+    shl_array_push (piboard.motions, pe);
+    if (!piboard.publisher)
+    {
+      nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
+      fprintf (piboard.saved, "M %.02f %.02f %.02f %.02f %.02f %u\n",
+               pe->motion.x,
+               pe->motion.y,
+               pe->motion.pressure,
+               pe->motion.xtilt,
+               pe->motion.ytilt,
+               pe->time);
+      fflush (piboard.saved);
+    }
     free (pe);
-
-  return TRUE;
-}
-
-static gboolean
-button_press_event_cb (GtkWidget *widget,
-                       GdkEventButton *event,
-                       gpointer        data)
-{
-  struct SerializEvent *pe;
-
-  pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
-  switch (event->button)
-  {
-    case GDK_BUTTON_PRIMARY:
-      pe->type = PRESSED;
-      pe->pressed.width = gtk_widget_get_allocated_width (widget);
-      pe->pressed.height = gtk_widget_get_allocated_height (widget);
-      pe->time = event->time;
-      g_signal_connect (widget, "motion-notify-event",
-                    G_CALLBACK (motion_notify_event_cb), NULL);
-      break;
-    default:
-      break;
-  }
-  if (!piboard.publisher)
-  {
-    nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
-    fprintf (piboard.saved, "P %d %d %u\n",
-             pe->pressed.width,
-             pe->pressed.height,
-             pe->time);
-    fflush (piboard.saved);
   }
 
-  free (pe);
   return TRUE;
 }
 
@@ -261,29 +219,24 @@ button_release_event_cb (GtkWidget *widget,
                        GdkEventButton *event,
                        gpointer        data)
 {
-  struct SerializEvent *pe;
-  pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
-  switch (event->button)
+  if (event->button == GDK_BUTTON_PRIMARY)
   {
-    case GDK_BUTTON_PRIMARY:
-      pe->type = RELEASED;
+    brush_draw (widget);
+
+    if (!piboard.publisher)
+    {
+      struct SerializEvent *pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
+      pe->type = DRAW;
+      pe->draw.width = gtk_widget_get_allocated_width (widget);
+      pe->draw.height = gtk_widget_get_allocated_height (widget);
       pe->time = event->time;
-      brush_draw (widget);
-      g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (motion_notify_event_cb), NULL);
-      break;
-    default:
-      break;
+      nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
+      fprintf (piboard.saved, "R %u\n",
+               pe->time);
+      fflush (piboard.saved);
+      free (pe);  
+    }
   }
-
-  if (!piboard.publisher)
-  {
-    nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
-    fprintf (piboard.saved, "R %u\n",
-             pe->time);
-    fflush (piboard.saved);
-  }
-
-  free (pe);  
   return TRUE;
 }
 
@@ -364,39 +317,24 @@ nn_sub(gpointer data)
     if (bytes == sizeof(struct SerializEvent) )
     {
         struct SerializEvent *event = (struct SerializEvent *)msg;
-        GdkEventButton      button;
         GdkEventKey         key;
         switch (event->type)
         {
             case MOTION:
-                event->motion.x *= (double)gtk_widget_get_allocated_width (widget) / piboard.remote_width;
-                event->motion.y *= (double)gtk_widget_get_allocated_height (widget) / piboard.remote_height;
-                motion_notify_event_cb (widget,
-                                        NULL,
-                                        event);
+                shl_array_push (piboard.motions, event);
                 break;
-            case PRESSED:
-                button.button = GDK_BUTTON_PRIMARY;
-                button.time = event->time;
-                piboard.remote_width = event->pressed.width;
-                piboard.remote_height = event->pressed.height;
-                button_press_event_cb (widget,
-                                       &button,
-                                       NULL);
-                break;
-            case RELEASED:
-                button.button = GDK_BUTTON_PRIMARY;
-                button.time = event->time;
-                button_release_event_cb (widget,
-                                       &button,
-                                       NULL);
+            case DRAW:
+                for (int i = 0; i < shl_array_get_length(piboard.motions); i++)
+                {
+                  struct SerializEvent *pe = SHL_ARRAY_AT(piboard.motions, struct SerializEvent, i);
+                  pe->motion.x *= (double)gtk_widget_get_allocated_width (widget) / event->draw.width;
+                  pe->motion.y *= (double)gtk_widget_get_allocated_height (widget) / event->draw.height;
+                }
+                brush_draw (widget);
                 break;
             case KEY:
-                key.keyval = event->key.keyval;
-                key.time = event->time;
-                key_press_event_cb (widget,
-                                    &key,
-                                    NULL);
+                if (event->key.keyval == GDK_KEY_c)
+                  clear_surface(widget);
                 break;
             default:
                 break;
@@ -432,12 +370,12 @@ activate (GtkApplication *app,
 
   g_signal_connect (drawing_area, "draw",
                     G_CALLBACK (screen_draw), NULL);
-  g_signal_connect (drawing_area, "button-press-event",
-                    G_CALLBACK (button_press_event_cb), NULL);
   g_signal_connect (drawing_area, "button-release-event",
                     G_CALLBACK (button_release_event_cb), NULL);
   g_signal_connect (drawing_area, "key-press-event",
                     G_CALLBACK (key_press_event_cb), NULL);
+  g_signal_connect (drawing_area, "motion-notify-event",
+                    G_CALLBACK (motion_notify_event_cb), NULL);
 
   gtk_widget_set_can_focus (drawing_area, TRUE);
   gtk_widget_add_events (drawing_area, 
