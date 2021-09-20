@@ -398,7 +398,7 @@ activate (GtkApplication *app,
   {
     piboard.nn_socket = nn_socket (AF_SP, NN_SUB);
     nn_setsockopt(piboard.nn_socket, NN_SUB, NN_SUB_SUBSCRIBE, "", 0);
-    g_idle_add (nn_sub, drawing_area);
+    g_timeout_add (100, nn_sub, drawing_area);
     char url[100];
     memset (url, 0, 100);
     sprintf (url, "tcp://%s:7789", piboard.publisher);
