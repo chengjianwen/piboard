@@ -13,33 +13,29 @@
 
 #pragma pack(4)
 
-typedef enum {
-    MOTION,
-    PRESSED,
-    RELEASED,
-    KEY,
-    NONE
-} PUBLISH_EVENT_TYPE;
+#define MOTION_LENGTH	1024
+struct tag {
+    int tag;
+};
 
-struct SerializEvent {
-    PUBLISH_EVENT_TYPE type;
-    union {
-        struct {
-            double x;
-            double y;
-            double pressure;
-            double xtilt;
-            double ytilt;
-        } motion;
-        struct {
-            int width;
-            int height;
-        } pressed;
-        struct {
-            int keyval;
-        } key;
-    };
-    unsigned int   time;
+struct stroke {
+    struct tag tag;
+    int   length;
+    int   width;
+    int   height;
+    struct motion {
+        double x;
+        double y;
+        double pressure;
+        double xtilt;
+        double ytilt;
+        unsigned int time;
+    } motions[MOTION_LENGTH];
+};
+
+struct  key {
+    struct tag tag;
+    int keyval;
 };
 
 struct PiBoardApp {
@@ -64,53 +60,51 @@ main (int    argc,
   piboard.nn_socket = nn_socket (AF_SP, NN_PUB);
   nn_bind (piboard.nn_socket, "tcp://*:7789");
 
-  struct SerializEvent *pe;
-  pe = malloc (sizeof (struct SerializEvent) );
-  
+  struct stroke stroke;
+  stroke.tag.tag = 0x00;
+  struct key key;
+  key.tag.tag = 0x01;
+
   unsigned int last = 0;
+  unsigned int time;
   char  buf[1024];
   memset (buf, 0, 1024);
   while (fgets(buf, 1024, piboard.saved) != NULL)
   {
     switch (buf[0])
     {
-      case 'P':
-        pe->type = PRESSED;
-        sscanf (buf + 2, "%d %d %u", &pe->pressed.width, &pe->pressed.height, &pe->time);
-        break;
       case 'R':
-        pe->type = RELEASED;
-        sscanf (buf + 2, "%u", &pe->time);
+        sscanf (buf + 2, "%d %d %u", &stroke.width, &stroke.height, &time);
+        nn_send (piboard.nn_socket, &stroke, sizeof (struct stroke) - sizeof (struct motion) * (MOTION_LENGTH - stroke.length), NN_DONTWAIT);
+       stroke.length = 0;
         break;
       case 'K':
-        pe->type = KEY;
-        sscanf (buf + 2, "%u %u", &pe->key.keyval, &pe->time);
+        sscanf (buf + 2, "%d %u", &key.keyval, &time);
+        nn_send (piboard.nn_socket, &key, sizeof (struct key), NN_DONTWAIT);
         break;
       case 'M':
-        pe->type = MOTION;
         sscanf (buf + 2, 
                 "%lf %lf %lf %lf %lf %u",
-                &pe->motion.x,
-                &pe->motion.y,
-                &pe->motion.pressure,
-                &pe->motion.xtilt,
-                &pe->motion.ytilt,
-                &pe->time);
+                &stroke.motions[stroke.length].x,
+                &stroke.motions[stroke.length].y,
+                &stroke.motions[stroke.length].pressure,
+                &stroke.motions[stroke.length].xtilt,
+                &stroke.motions[stroke.length].ytilt,
+                &time);
+          stroke.length = stroke.length + 1;
         break;
       case 'N':
-        pe->type = NONE;
-        sscanf (buf + 2, "%u", &pe->time);
+        sscanf (buf + 2, "%u", &time);
         break;
      default:
         break;
     }
     memset (buf, 0, 1024);
-    if (last && pe->time - last > 0)
+    if (last && time - last > 0)
     {
-      usleep ((pe->time - last) * 1000);
+      usleep ((time - last) * 1000);
     }
-    last = pe->time;
-    nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
+    last = time;
   }
   nn_close(piboard.nn_socket);
   fclose (piboard.saved);

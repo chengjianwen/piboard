@@ -10,40 +10,35 @@
 #include <nanomsg/pubsub.h>
 #include <ctype.h>
 #include <math.h>
-#include <pthread.h>
 #include "mypaint-resizable-tiled-surface.h"
-#include "shl_array.h"
 
 #pragma pack(4)
 
 #define DEFAULT_BRUSH	"deevad/liner.myb"
+#define	MOTION_LENGTH	1024
 
-typedef enum {
-    MOTION,
-    DRAW,
-    KEY,
-    NONE
-} PUBLISH_EVENT_TYPE;
+struct tag {
+    int tag;
+};
 
-struct SerializEvent {
-    PUBLISH_EVENT_TYPE type;
-    union {
-        struct {
-            double x;
-            double y;
-            double pressure;
-            double xtilt;
-            double ytilt;
-        } motion;
-        struct {
-            int width;
-            int height;
-        } draw;
-        struct {
-            int keyval;
-        } key;
-    };
-    unsigned int   time;
+struct stroke {
+    struct tag tag;
+    int length;
+    int width;
+    int height;
+    struct motion {
+        double x;
+        double y;
+        double pressure;
+        double xtilt;
+        double ytilt;
+        unsigned int   time;
+    }motions[MOTION_LENGTH];
+};
+
+struct key {
+    struct tag tag;
+    int keyval;   
 };
 
 struct PiBoardApp {
@@ -52,8 +47,8 @@ struct PiBoardApp {
 	MyPaintBrush                 *brush;
 	int	                     nn_socket;
         char                         *publisher;
-        struct shl_array             *motions;
-        FILE                         *saved;		// track file
+        struct stroke                stroke;
+        FILE                         *saved;
 };
 
 struct PiBoardApp	piboard;
@@ -102,13 +97,11 @@ screen_draw (GtkWidget *widget,
 }
 
 static void
-brush_draw (GtkWidget *widget)
+brush_draw (GtkWidget *widget, struct stroke *stroke)
 {
-  int len = shl_array_get_length (piboard.motions);
-  if (!len)
+  if (!stroke->length)
     return;
-  struct SerializEvent *pe = SHL_ARRAY_AT(piboard.motions, struct SerializEvent, 0);
-  guint32 last = pe->time;
+  guint32 last = stroke->motions[0].time;
   double dtime;
   MyPaintRectangle roi;
   MyPaintSurface *surface;
@@ -116,27 +109,24 @@ brush_draw (GtkWidget *widget)
   mypaint_surface_begin_atomic(surface);
   mypaint_brush_reset (piboard.brush);
   mypaint_brush_new_stroke (piboard.brush);
-  for (int i = 1; i < len; i++)
+  for (int i = 1; i < stroke->length; i++)
   {
-    pe = SHL_ARRAY_AT(piboard.motions, struct SerializEvent, i);
-    dtime = (double)(pe->time - last) / 1000;
-    last = pe->time;
+    dtime = (double)(stroke->motions[i].time - last) / 1000;
+    last = stroke->motions[i].time;
 
     mypaint_brush_stroke_to (piboard.brush,
                             surface,
-                            pe->motion.x,
-                            pe->motion.y,
-                            pe->motion.pressure,
-                            pe->motion.xtilt,
-                            pe->motion.ytilt,
+                            stroke->motions[i].x,
+                            stroke->motions[i].y,
+                            stroke->motions[i].pressure,
+                            stroke->motions[i].xtilt,
+                            stroke->motions[i].ytilt,
                             dtime);
   }
   mypaint_surface_end_atomic(surface, &roi);
-  piboard.motions->length = 0;
   
   gtk_widget_queue_draw_area(widget, roi.x, roi.y, roi.width, roi.height);
 }
-
 
 static void 
 clear_surface (GtkWidget *widget)
@@ -163,17 +153,14 @@ key_press_event_cb (GtkWidget *widget,
   }
   if (!piboard.publisher)
   {
-    struct SerializEvent *pe;
-    pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
-    pe->type = KEY;
-    pe->key.keyval = event->keyval;
-    pe->time = event->time;
-    nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
+    struct key key;
+    key.tag.tag = 0x01;
+    key.keyval = event->keyval;
+    nn_send (piboard.nn_socket, &key, sizeof (struct key), NN_DONTWAIT);
     fprintf (piboard.saved, "K %d %u\n",
              event->keyval,
              event->time);
     fflush (piboard.saved);
-    free (pe);
   }
   return TRUE;
 }
@@ -185,30 +172,17 @@ motion_notify_event_cb (GtkWidget *widget,
 {
   if (event->state & GDK_BUTTON1_MASK)
   {
-    struct SerializEvent *pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
-    pe->type = MOTION;
-    pe->motion.x = event->x;
-    pe->motion.y = event->y;
-    gdouble pressure, xtilt, ytilt;
-    pe->motion.pressure = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_PRESSURE, &pressure) ? pressure : 1.0;
-    pe->motion.xtilt = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_XTILT, &xtilt) ? xtilt : 0.0;
-    pe->motion.ytilt = gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_YTILT, &ytilt) ? ytilt : 0.0;
-    pe->time = event->time;
+    piboard.stroke.motions[piboard.stroke.length].x = event->x;
+    piboard.stroke.motions[piboard.stroke.length].y = event->y;
+    if (!gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_PRESSURE, &piboard.stroke.motions[piboard.stroke.length].pressure))
+        piboard.stroke.motions[piboard.stroke.length].pressure = 1.0;
+    if (!gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_PRESSURE, &piboard.stroke.motions[piboard.stroke.length].xtilt))
+        piboard.stroke.motions[piboard.stroke.length].xtilt = 0.0;
+    if (!gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_PRESSURE, &piboard.stroke.motions[piboard.stroke.length].ytilt))
+        piboard.stroke.motions[piboard.stroke.length].ytilt = 0.0;
+    piboard.stroke.motions[piboard.stroke.length].time = event->time;
 
-    shl_array_push (piboard.motions, pe);
-    if (!piboard.publisher)
-    {
-      nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
-      fprintf (piboard.saved, "M %.02f %.02f %.02f %.02f %.02f %u\n",
-               pe->motion.x,
-               pe->motion.y,
-               pe->motion.pressure,
-               pe->motion.xtilt,
-               pe->motion.ytilt,
-               pe->time);
-      fflush (piboard.saved);
-    }
-    free (pe);
+    piboard.stroke.length++;
   }
 
   return TRUE;
@@ -221,21 +195,28 @@ button_release_event_cb (GtkWidget *widget,
 {
   if (event->button == GDK_BUTTON_PRIMARY)
   {
-    brush_draw (widget);
-
+    brush_draw (widget, &piboard.stroke);
     if (!piboard.publisher)
     {
-      struct SerializEvent *pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
-      pe->type = DRAW;
-      pe->draw.width = gtk_widget_get_allocated_width (widget);
-      pe->draw.height = gtk_widget_get_allocated_height (widget);
-      pe->time = event->time;
-      nn_send (piboard.nn_socket, pe, sizeof (struct SerializEvent), NN_DONTWAIT);
-      fprintf (piboard.saved, "R %u\n",
-               pe->time);
+      piboard.stroke.tag.tag = 0x00;
+      piboard.stroke.width = gtk_widget_get_allocated_width (widget);
+      piboard.stroke.height = gtk_widget_get_allocated_height (widget);
+      nn_send (piboard.nn_socket, &piboard.stroke, sizeof (struct stroke) - sizeof (struct motion) * (MOTION_LENGTH - piboard.stroke.length), NN_DONTWAIT);
+      for (int i = 0; i < piboard.stroke.length; i++)
+        fprintf (piboard.saved, "M %.02f %.02f %.02f %.02f %.02f %u\n",
+                 piboard.stroke.motions[i].x,
+                 piboard.stroke.motions[i].y,
+                 piboard.stroke.motions[i].pressure,
+                 piboard.stroke.motions[i].xtilt,
+                 piboard.stroke.motions[i].ytilt,
+                 piboard.stroke.motions[i].time);
+      fprintf (piboard.saved, "R %d %d %u\n",
+               piboard.stroke.width,
+               piboard.stroke.height,
+               event->time);
       fflush (piboard.saved);
-      free (pe);  
     }
+    piboard.stroke.length = 0;
   }
   return TRUE;
 }
@@ -250,7 +231,6 @@ close_window (GtkWidget *widget,
     mypaint_surface_unref((MyPaintSurface *)piboard.surface);
   if (piboard.brush)
     mypaint_brush_unref(piboard.brush);
-  shl_array_free (piboard.motions);
   nn_close(piboard.nn_socket);
   g_application_quit(G_APPLICATION(piboard.app));
 }
@@ -310,38 +290,32 @@ configure_event_cb (GtkWidget         *widget,
 static gboolean
 nn_sub(gpointer data)
 {
-    int bytes;
-    GtkWidget *widget = data;
-    void *msg = NULL;
-    bytes = nn_recv (piboard.nn_socket, &msg, NN_MSG, NN_DONTWAIT);
-    if (bytes == sizeof(struct SerializEvent) )
+  int bytes;
+  GtkWidget *widget = data;
+  void *msg = NULL;
+  bytes = nn_recv (piboard.nn_socket, &msg, NN_MSG, NN_DONTWAIT);
+  if (bytes > 0)
+  {
+    struct tag *tag = (struct tag *)msg;
+    if (tag->tag == 0x00)
     {
-        struct SerializEvent *event = (struct SerializEvent *)msg;
-        GdkEventKey         key;
-        switch (event->type)
-        {
-            case MOTION:
-                shl_array_push (piboard.motions, event);
-                break;
-            case DRAW:
-                for (int i = 0; i < shl_array_get_length(piboard.motions); i++)
-                {
-                  struct SerializEvent *pe = SHL_ARRAY_AT(piboard.motions, struct SerializEvent, i);
-                  pe->motion.x *= (double)gtk_widget_get_allocated_width (widget) / event->draw.width;
-                  pe->motion.y *= (double)gtk_widget_get_allocated_height (widget) / event->draw.height;
-                }
-                brush_draw (widget);
-                break;
-            case KEY:
-                if (event->key.keyval == GDK_KEY_c)
-                  clear_surface(widget);
-                break;
-            default:
-                break;
-        }
-        nn_freemsg (msg);
+      struct stroke *stroke = (struct stroke *)msg;
+      for (int i = 0; i < stroke->length; i++)
+      {
+        stroke->motions[i].x *= (double)gtk_widget_get_allocated_width (widget) / stroke->width;
+        stroke->motions[i].y *= (double)gtk_widget_get_allocated_height (widget) / stroke->height;
+      }
+      brush_draw (widget, stroke);
     }
-    return TRUE;
+    else if (tag->tag == 0x01)
+    {
+      struct key *key = (struct key *)msg;
+      if (key->keyval == GDK_KEY_c)
+        clear_surface(widget);
+    }
+    nn_freemsg (msg);
+  }
+  return TRUE;
 }
 
 static void
@@ -385,14 +359,8 @@ activate (GtkApplication *app,
     piboard.nn_socket = nn_socket (AF_SP, NN_PUB);
     nn_bind (piboard.nn_socket, "tcp://*:7789");
     piboard.saved = fopen (".saved.txt", "w");
-    struct SerializEvent *pe;
-    pe = (struct SerializEvent *)malloc (sizeof (struct SerializEvent) );
-    pe->type = NONE;
-    pe->time =  (unsigned int)(g_get_monotonic_time() / 1000);
     fprintf (piboard.saved, "N %u\n",
-             pe->time);
-    fflush (piboard.saved);
-    free (pe);
+             g_get_monotonic_time() / 1000);
   }
   else
   {
@@ -416,7 +384,6 @@ main (int    argc,
   int status;
 
   memset (&piboard, 0, sizeof (struct PiBoardApp));
-  shl_array_new (&piboard.motions, sizeof (struct SerializEvent), 1024);
 
   FILE *fp;
   fp = fopen ("/etc/piboard.conf", "r");

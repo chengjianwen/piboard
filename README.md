@@ -4,7 +4,7 @@ PiBoard是一个支持远程绘制的白板软件，分为绘制端和用户端�
 
 作为用户端运行时需要在/etc/piboard.conf文件中输入绘制端的IP地址/主机名，否则程序将作为绘制端运行。
 
-piplay可以重新运行绘制端的绘制操作。
+通过piplay可以重新运行绘制端的绘制操作。
 
 ##程序编译：
 
@@ -33,4 +33,4 @@ piplay可以重新运行绘制端的绘制操作。
 
     由于采用了libmypaint，所以完全支持MyPaint的Brush。
 
-    程序锁采用的Brush为deevad/liner.myb.
+    程序所采用的Brush为deevad/liner.myb.
