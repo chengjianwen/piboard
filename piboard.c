@@ -15,7 +15,12 @@
 
 #pragma pack(4)
 
+// 缺省压感值
 #define	DEFAULT_PRESSURE	0.5
+// 缺省X倾角值
+#define	DEFAULT_XTILT		0.0
+// 缺省Y倾角值
+#define	DEFAULT_YTILT		0.0
 /*
 /usr/share/mypaint-data/1.0/brushes/classic/kabura.myb
 */
@@ -300,6 +305,8 @@ struct stroke {
         double x;
         double y;
         double pressure;
+        double xtilt;
+        double ytilt;
         unsigned int   time;
     }motions[MOTION_LENGTH];
 };
@@ -444,6 +451,10 @@ motion_notify_event_cb (GtkWidget *widget,
     piboard.stroke.motions[piboard.stroke.length].y = event->y;
     if (!gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_PRESSURE, &piboard.stroke.motions[piboard.stroke.length].pressure))
         piboard.stroke.motions[piboard.stroke.length].pressure = DEFAULT_PRESSURE;
+    if (!gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_XTILT, &piboard.stroke.motions[piboard.stroke.length].xtilt))
+        piboard.stroke.motions[piboard.stroke.length].xtilt = DEFAULT_XTILT;
+    if (!gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_YTILT, &piboard.stroke.motions[piboard.stroke.length].ytilt))
+        piboard.stroke.motions[piboard.stroke.length].ytilt = DEFAULT_YTILT;
     piboard.stroke.motions[piboard.stroke.length].time = event->time;
 
     piboard.stroke.length++;
