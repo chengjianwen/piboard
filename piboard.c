@@ -299,8 +299,6 @@ struct stroke {
         double x;
         double y;
         double pressure;
-        double xtilt;
-        double ytilt;
         unsigned int   time;
     }motions[MOTION_LENGTH];
 };
@@ -378,7 +376,7 @@ brush_draw (GtkWidget *widget, struct stroke *stroke)
   mypaint_surface_begin_atomic(surface);
   mypaint_brush_reset (piboard.brush);
   mypaint_brush_new_stroke (piboard.brush);
-  for (int i = 1; i < stroke->length; i++)
+  for (int i = 0; i < stroke->length; i++)
   {
     dtime = (double)(stroke->motions[i].time - last) / 1000;
     last = stroke->motions[i].time;
@@ -388,8 +386,8 @@ brush_draw (GtkWidget *widget, struct stroke *stroke)
                             stroke->motions[i].x,
                             stroke->motions[i].y,
                             stroke->motions[i].pressure,
-                            stroke->motions[i].xtilt,
-                            stroke->motions[i].ytilt,
+                            0.0,
+                            0.0,
                             dtime);
   }
   mypaint_surface_end_atomic(surface, &roi);
@@ -445,10 +443,6 @@ motion_notify_event_cb (GtkWidget *widget,
     piboard.stroke.motions[piboard.stroke.length].y = event->y;
     if (!gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_PRESSURE, &piboard.stroke.motions[piboard.stroke.length].pressure))
         piboard.stroke.motions[piboard.stroke.length].pressure = 1.0;
-    if (!gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_PRESSURE, &piboard.stroke.motions[piboard.stroke.length].xtilt))
-        piboard.stroke.motions[piboard.stroke.length].xtilt = 0.0;
-    if (!gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_PRESSURE, &piboard.stroke.motions[piboard.stroke.length].ytilt))
-        piboard.stroke.motions[piboard.stroke.length].ytilt = 0.0;
     piboard.stroke.motions[piboard.stroke.length].time = event->time;
 
     piboard.stroke.length++;
@@ -472,12 +466,10 @@ button_release_event_cb (GtkWidget *widget,
       piboard.stroke.height = gtk_widget_get_allocated_height (widget);
       nn_send (piboard.nn_socket, &piboard.stroke, sizeof (struct stroke) - sizeof (struct motion) * (MOTION_LENGTH - piboard.stroke.length), NN_DONTWAIT);
       for (int i = 0; i < piboard.stroke.length; i++)
-        fprintf (piboard.saved, "M %.02f %.02f %.02f %.02f %.02f %u\n",
+        fprintf (piboard.saved, "M %.02f %.02f %.02f %u\n",
                  piboard.stroke.motions[i].x,
                  piboard.stroke.motions[i].y,
                  piboard.stroke.motions[i].pressure,
-                 piboard.stroke.motions[i].xtilt,
-                 piboard.stroke.motions[i].ytilt,
                  piboard.stroke.motions[i].time);
       fprintf (piboard.saved, "R %d %d %u\n",
                piboard.stroke.width,
