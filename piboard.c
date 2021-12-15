@@ -15,6 +15,7 @@
 
 #pragma pack(4)
 
+#define	DEFAULT_PRESSURE	0.5
 /*
 /usr/share/mypaint-data/1.0/brushes/classic/kabura.myb
 */
@@ -442,7 +443,7 @@ motion_notify_event_cb (GtkWidget *widget,
     piboard.stroke.motions[piboard.stroke.length].x = event->x;
     piboard.stroke.motions[piboard.stroke.length].y = event->y;
     if (!gdk_event_get_axis ((GdkEvent *)event, GDK_AXIS_PRESSURE, &piboard.stroke.motions[piboard.stroke.length].pressure))
-        piboard.stroke.motions[piboard.stroke.length].pressure = 1.0;
+        piboard.stroke.motions[piboard.stroke.length].pressure = DEFAULT_PRESSURE;
     piboard.stroke.motions[piboard.stroke.length].time = event->time;
 
     piboard.stroke.length++;
