@@ -372,7 +372,6 @@ screen_draw (GtkWidget *widget,
       mypaint_tiled_surface_tile_request_end(surface, &request);
     }
   }
-  printf ("end.\n");
   return FALSE;
 }
 
