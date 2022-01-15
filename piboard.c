@@ -345,20 +345,24 @@ screen_draw (GtkWidget *widget,
   {
     for (int ty = floor((double)surface->dirty_bbox.y / tile_size); ty < ceil((double)(surface->dirty_bbox.y + surface->dirty_bbox.height) / tile_size); ty++)
     {
-      const int max_x = tx < tiles_per_rows - 1 || width % tile_size == 0 ? tile_size : width % tile_size;
-      const int max_y = ty < number_of_tile_rows - 1 || height % tile_size == 0 ? tile_size : height % tile_size;
+      int max_x = tx < tiles_per_rows - 1 || width % tile_size == 0 ? tile_size : width % tile_size;
+      int max_y = ty < number_of_tile_rows - 1 || height % tile_size == 0 ? tile_size : height % tile_size;
       MyPaintTileRequest request;
       mypaint_tile_request_init(&request, 0, tx, ty, TRUE);
       mypaint_tiled_surface_tile_request_start(surface, &request);
       for (int y = 0; y < max_y; y++) {
-        const int yy = ty * tile_size + y;
+        int yy = ty * tile_size + y;
         for (int x = 0; x < max_x; x++) {
-          const int xx = tx * tile_size + x;
-          const int offset = tile_size * y + x;
-          const uint16_t r = (request.buffer[offset * 4] & 0xF800) >> 11;
-          const uint16_t g = (request.buffer[offset * 4] & 0x07E0) >> 5;
-          const uint16_t b = request.buffer[offset * 4] & 0x1F;
-          cairo_set_source_rgb(cr, (double)r / 0x1F, (double)g / 0x3F, (double)b / 0x1F);
+          int xx = tx * tile_size + x;
+          int offset = tile_size * y + x;
+          uint16_t r = request.buffer[offset * 4] & 0x7FFF;
+          uint16_t g = request.buffer[offset * 4 + 1] & 0x7FFF;
+          uint16_t b = request.buffer[offset * 4 + 2] & 0x7FFF;
+          float rr = (float)r / 0x7FFF;
+          float gg = (float)g / 0x7FFF;
+          float bb = (float)b / 0x7FFF;
+          
+          cairo_set_source_rgb(cr, rr, gg, bb);
           cairo_set_line_width (cr, 1);
           cairo_move_to(cr, xx, yy);
           cairo_line_to(cr, xx + 1, yy + 1);
@@ -368,6 +372,7 @@ screen_draw (GtkWidget *widget,
       mypaint_tiled_surface_tile_request_end(surface, &request);
     }
   }
+  printf ("end.\n");
   return FALSE;
 }
 
@@ -578,7 +583,7 @@ activate (GtkApplication *app,
     gtk_window_set_title (GTK_WINDOW (window), "PiBoard-Subcriber");
   else
     gtk_window_set_title (GTK_WINDOW (window), "PiBoard-Publisher");
-  gtk_window_fullscreen(GTK_WINDOW(window));
+  //gtk_window_fullscreen(GTK_WINDOW(window));
 
   g_signal_connect (window, "destroy", G_CALLBACK (close_window), NULL);
 
