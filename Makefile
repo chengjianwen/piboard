@@ -13,6 +13,8 @@ clean:
 
 install: piboard
 	install piboard /usr/bin
-	install piboard.png /usr/share/pixmaps
-	install piboard.desktop /usr/share/applications
-	lxpanelctl restart
+	xdg-desktop-menu install pi-classroom-piboard.desktop
+	xdg-icon-resource install --size 24 pi-classroom-piboard-24.png p-classroom-2iboard
+	xdg-icon-resource install --size 48 pi-classroom-piboard-48.png pi-classroom-piboard
+	xdg-icon-resource install --size 64 pi-classroom-piboard-64.png pi-classroom-piboard
+	xdg-desktop-menu forceupdate
