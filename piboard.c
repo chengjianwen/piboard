@@ -21,6 +21,8 @@
 #define	DEFAULT_XTILT		0.0
 // 缺省Y倾角值
 #define	DEFAULT_YTILT		0.0
+// 缺省保存文件名
+#define DEFAULT_SAVETO          "output.txt"
 /*
 /usr/share/mypaint-data/1.0/brushes/classic/kabura.myb
 */
@@ -290,7 +292,7 @@ static char *brush = "{"
                      "}, "
                      "\"version\": 3"
                   "}";
-#define	MOTION_LENGTH	1024
+#define	MAX_MOTION_LENGTH	1024
 
 struct tag {
     int tag;
@@ -308,7 +310,7 @@ struct stroke {
         double xtilt;
         double ytilt;
         unsigned int   time;
-    }motions[MOTION_LENGTH];
+    }motions[MAX_MOTION_LENGTH];
 };
 
 struct key {
@@ -321,7 +323,8 @@ struct PiBoardApp {
 	MyPaintResizableTiledSurface *surface;
 	MyPaintBrush                 *brush;
 	int	                     nn_socket;
-        char                         *publisher;
+        char                         *remote;
+        char                         *saveto;
         struct stroke                stroke;
         FILE                         *saved;
 };
@@ -388,11 +391,9 @@ brush_draw (GtkWidget *widget, struct stroke *stroke)
   mypaint_surface_begin_atomic(surface);
   mypaint_brush_reset (piboard.brush);
   mypaint_brush_new_stroke (piboard.brush);
-  for (int i = 0; i < stroke->length; i++)
-  {
+  for (int i = 0; i < stroke->length; i++)  {
     dtime = (double)(stroke->motions[i].time - last) / 1000;
     last = stroke->motions[i].time;
-
     mypaint_brush_stroke_to (piboard.brush,
                             surface,
                             stroke->motions[i].x,
@@ -430,7 +431,7 @@ key_press_event_cb (GtkWidget *widget,
     default:
          break;
   }
-  if (!piboard.publisher)
+  if (!piboard.remote)
   {
     struct key key;
     key.tag.tag = 0x01;
@@ -439,7 +440,6 @@ key_press_event_cb (GtkWidget *widget,
     fprintf (piboard.saved, "K %d %u\n",
              event->keyval,
              event->time);
-    fflush (piboard.saved);
   }
   return TRUE;
 }
@@ -449,7 +449,8 @@ motion_notify_event_cb (GtkWidget *widget,
                         GdkEventMotion *event,
                         gpointer        data)
 {
-  if (event->state & GDK_BUTTON1_MASK)
+  if (event->state & GDK_BUTTON1_MASK
+  && piboard.stroke.length < MAX_MOTION_LENGTH)
   {
     piboard.stroke.motions[piboard.stroke.length].x = event->x;
     piboard.stroke.motions[piboard.stroke.length].y = event->y;
@@ -474,13 +475,13 @@ button_release_event_cb (GtkWidget *widget,
 {
   if (event->button == GDK_BUTTON_PRIMARY)
   {
+    piboard.stroke.width = gtk_widget_get_allocated_width (widget);
+    piboard.stroke.height = gtk_widget_get_allocated_height (widget);
     brush_draw (widget, &piboard.stroke);
-    if (!piboard.publisher)
+    if (!piboard.remote)
     {
       piboard.stroke.tag.tag = 0x00;
-      piboard.stroke.width = gtk_widget_get_allocated_width (widget);
-      piboard.stroke.height = gtk_widget_get_allocated_height (widget);
-      nn_send (piboard.nn_socket, &piboard.stroke, sizeof (struct stroke) - sizeof (struct motion) * (MOTION_LENGTH - piboard.stroke.length), NN_DONTWAIT);
+      nn_send (piboard.nn_socket, &piboard.stroke, sizeof (struct stroke) - sizeof (struct motion) * (MAX_MOTION_LENGTH - piboard.stroke.length), NN_DONTWAIT);
       for (int i = 0; i < piboard.stroke.length; i++)
         fprintf (piboard.saved, "M %.02f %.02f %.02f %u\n",
                  piboard.stroke.motions[i].x,
@@ -491,7 +492,6 @@ button_release_event_cb (GtkWidget *widget,
                piboard.stroke.width,
                piboard.stroke.height,
                event->time);
-      fflush (piboard.saved);
     }
     piboard.stroke.length = 0;
   }
@@ -499,9 +499,11 @@ button_release_event_cb (GtkWidget *widget,
 }
 
 static void
-close_window (GtkWidget *widget,
+window_close (GtkWidget *widget,
               gpointer   data)
 {
+  if (piboard.remote)
+    free(piboard.remote);
   if (piboard.saved)
     fclose (piboard.saved);
   if (piboard.surface)
@@ -573,18 +575,16 @@ nn_sub(gpointer data)
 }
 
 static void
-activate (GtkApplication *app,
-          gpointer        user_data)
+app_activate (GtkApplication *app,
+              gpointer        data)
 {
   GtkWidget *window;
   window = gtk_application_window_new (app);
-  if (piboard.publisher)
-    gtk_window_set_title (GTK_WINDOW (window), "PiBoard-Subcriber");
-  else
-    gtk_window_set_title (GTK_WINDOW (window), "PiBoard-Publisher");
-  //gtk_window_fullscreen(GTK_WINDOW(window));
+  if (piboard.remote)
+    gtk_window_set_title (GTK_WINDOW (window), piboard.remote);
+  gtk_window_fullscreen(GTK_WINDOW(window));
 
-  g_signal_connect (window, "destroy", G_CALLBACK (close_window), NULL);
+  g_signal_connect (window, "destroy", G_CALLBACK (window_close), NULL);
 
   gtk_container_set_border_width (GTK_CONTAINER (window), 8);
 
@@ -608,11 +608,11 @@ activate (GtkApplication *app,
   gtk_widget_set_can_focus (drawing_area, TRUE);
   gtk_widget_add_events (drawing_area, 
                          GDK_KEY_PRESS_MASK | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
-  if (!piboard.publisher)
+  if (!piboard.remote)
   {
     piboard.nn_socket = nn_socket (AF_SP, NN_PUB);
     nn_bind (piboard.nn_socket, "tcp://*:7789");
-    piboard.saved = fopen (".saved.txt", "w");
+    piboard.saved = fopen (piboard.saveto ? piboard.saveto : DEFAULT_SAVETO, "w");
     fprintf (piboard.saved, "N %u\n",
              (unsigned int)g_get_monotonic_time() / 1000);
   }
@@ -621,12 +621,11 @@ activate (GtkApplication *app,
     piboard.nn_socket = nn_socket (AF_SP, NN_SUB);
     nn_setsockopt(piboard.nn_socket, NN_SUB, NN_SUB_SUBSCRIBE, "", 0);
     g_timeout_add (10, nn_sub, drawing_area);
-    char url[100];
-    memset (url, 0, 100);
-    sprintf (url, "tcp://%s:7789", piboard.publisher);
+    char url[64];
+    sprintf (url, "tcp://%s:7789", piboard.remote);
     nn_connect (piboard.nn_socket, url);
   }
-  
+
   gtk_widget_show_all (window);
   gtk_window_present(GTK_WINDOW(window));
 }
@@ -639,37 +638,42 @@ main (int    argc,
 
   memset (&piboard, 0, sizeof (struct PiBoardApp));
 
-  FILE *fp;
-  fp = fopen ("/etc/piboard.conf", "r");
-  if (fp)
-  {
-    char  buf[1024];
-    char  *p, *p1;
-    while (fgets (buf, 1024, fp) != NULL)
-    {
-        p = buf;
-        while (isspace((unsigned char)*p))
-          p++;
-        if (*p == 0 || *p == '#')
-          continue;
-        p1 = p + strlen(p) - 1;
-        while (p1 > p && isspace((unsigned char)*p1))
-          p1--;
-        piboard.publisher = strndup (p, p1 - p + 1);
-        // only one line
-        break;
-    }
-    fclose (fp);
-  }
+  piboard.app = gtk_application_new ("com.pi-classroom.piboard",
+                                     G_APPLICATION_FLAGS_NONE);
 
-  char	str[128];
-  memset (str, 0, 128);
-  sprintf (str, "com.pi-classroom.piboard_%04d", getpid() );
-  piboard.app = gtk_application_new (str, G_APPLICATION_FLAGS_NONE);
+  g_signal_connect (piboard.app,
+                    "activate",
+                    G_CALLBACK (app_activate), NULL);
 
-  g_signal_connect (piboard.app, "activate", G_CALLBACK (activate), NULL);
+  const GOptionEntry options[] = {
+                                   {
+                                     .long_name       = "remote",
+                                     .short_name      = 'r',
+                                     .flags           = G_OPTION_FLAG_NONE,
+                                     .arg             = G_OPTION_ARG_STRING,
+                                     .arg_data        = &piboard.remote,
+                                     .description     = "远程服务器地址",
+                                     .arg_description = NULL,
+                                   },
+                                   {
+                                     .long_name       = "saveto",
+                                     .short_name      = 's',
+                                     .flags           = G_OPTION_FLAG_NONE,
+                                     .arg             = G_OPTION_ARG_FILENAME,
+                                     .arg_data        = &piboard.saveto,
+                                     .description     = "保存文件名，缺省为: output.txt",
+                                     .arg_description = NULL,
+                                   },
+                                   {
+                                     NULL,
+                                   }
+                                 };
+  g_application_add_main_option_entries (G_APPLICATION (piboard.app),
+                                         options);
 
-  status = g_application_run (G_APPLICATION (piboard.app), 0, NULL);
+  status = g_application_run (G_APPLICATION (piboard.app),
+                              argc,
+                              argv);
   g_object_unref (piboard.app);
 
   return status;

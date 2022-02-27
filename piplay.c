@@ -103,6 +103,7 @@ main (int    argc,
     if (last && time - last > 0)
     {
       usleep ((time - last) * 1000);
+      printf ("sleep %ul usecs\n", time - last);
     }
     last = time;
   }
