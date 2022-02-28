@@ -8,7 +8,7 @@
 #include <gtk/gtk.h>
 #include <mypaint-brush.h>
 #include <nanomsg/nn.h>
-#include <nanomsg/pubsub.h>
+#include <nanomsg/pair.h>
 #include <ctype.h>
 #include <math.h>
 #include "mypaint-resizable-tiled-surface.h"
@@ -322,8 +322,8 @@ struct PiBoardApp {
         GtkApplication *app;
 	MyPaintResizableTiledSurface *surface;
 	MyPaintBrush                 *brush;
-	int	                     nn_socket;
-        char                         *remote;
+	int	                     *nn_sockets;
+        char                         **clients;
         char                         *saveto;
         struct stroke                stroke;
         FILE                         *saved;
@@ -431,15 +431,18 @@ key_press_event_cb (GtkWidget *widget,
     default:
          break;
   }
-  if (!piboard.remote)
+  if (piboard.clients)
   {
     struct key key;
     key.tag.tag = 0x01;
     key.keyval = event->keyval;
-    nn_send (piboard.nn_socket, &key, sizeof (struct key), NN_DONTWAIT);
+    for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
+    {
+      nn_send (piboard.nn_sockets[i], &key, sizeof (struct key), NN_DONTWAIT);
+    }
     fprintf (piboard.saved, "K %d %u\n",
-             event->keyval,
-             event->time);
+           event->keyval,
+           event->time);
   }
   return TRUE;
 }
@@ -478,10 +481,14 @@ button_release_event_cb (GtkWidget *widget,
     piboard.stroke.width = gtk_widget_get_allocated_width (widget);
     piboard.stroke.height = gtk_widget_get_allocated_height (widget);
     brush_draw (widget, &piboard.stroke);
-    if (!piboard.remote)
+    if (piboard.clients)
     {
       piboard.stroke.tag.tag = 0x00;
-      nn_send (piboard.nn_socket, &piboard.stroke, sizeof (struct stroke) - sizeof (struct motion) * (MAX_MOTION_LENGTH - piboard.stroke.length), NN_DONTWAIT);
+      for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
+        nn_send (piboard.nn_sockets[i],
+                 &piboard.stroke,
+                 sizeof (struct stroke) - sizeof (struct motion) * (MAX_MOTION_LENGTH - piboard.stroke.length),
+                 NN_DONTWAIT);
       for (int i = 0; i < piboard.stroke.length; i++)
         fprintf (piboard.saved, "M %.02f %.02f %.02f %u\n",
                  piboard.stroke.motions[i].x,
@@ -502,15 +509,18 @@ static void
 window_close (GtkWidget *widget,
               gpointer   data)
 {
-  if (piboard.remote)
-    free(piboard.remote);
+  if (piboard.clients)
+    g_strfreev(piboard.clients);
   if (piboard.saved)
     fclose (piboard.saved);
   if (piboard.surface)
     mypaint_surface_unref((MyPaintSurface *)piboard.surface);
   if (piboard.brush)
     mypaint_brush_unref(piboard.brush);
-  nn_close(piboard.nn_socket);
+  for(int i = 0; piboard.nn_sockets[i] >= 0; i++)
+    nn_close(piboard.nn_sockets[i]);
+  if (piboard.nn_sockets)
+    free (piboard.nn_sockets);
   g_application_quit(G_APPLICATION(piboard.app));
 }
 
@@ -549,27 +559,30 @@ nn_sub(gpointer data)
   int bytes;
   GtkWidget *widget = data;
   void *msg = NULL;
-  bytes = nn_recv (piboard.nn_socket, &msg, NN_MSG, NN_DONTWAIT);
-  if (bytes > 0)
+  for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
   {
-    struct tag *tag = (struct tag *)msg;
-    if (tag->tag == 0x00)
+    bytes = nn_recv (piboard.nn_sockets[i], &msg, NN_MSG, NN_DONTWAIT);
+    if (bytes > 0)
     {
-      struct stroke *stroke = (struct stroke *)msg;
-      for (int i = 0; i < stroke->length; i++)
+      struct tag *tag = (struct tag *)msg;
+      if (tag->tag == 0x00)
       {
-        stroke->motions[i].x *= (double)gtk_widget_get_allocated_width (widget) / stroke->width;
-        stroke->motions[i].y *= (double)gtk_widget_get_allocated_height (widget) / stroke->height;
+        struct stroke *stroke = (struct stroke *)msg;
+        for (int i = 0; i < stroke->length; i++)
+        {
+          stroke->motions[i].x *= (double)gtk_widget_get_allocated_width (widget) / stroke->width;
+          stroke->motions[i].y *= (double)gtk_widget_get_allocated_height (widget) / stroke->height;
+        }
+        brush_draw (widget, stroke);
       }
-      brush_draw (widget, stroke);
+      else if (tag->tag == 0x01)
+      {
+        struct key *key = (struct key *)msg;
+        if (key->keyval == GDK_KEY_c)
+          clear_surface(widget);
+      }
+      nn_freemsg (msg);
     }
-    else if (tag->tag == 0x01)
-    {
-      struct key *key = (struct key *)msg;
-      if (key->keyval == GDK_KEY_c)
-        clear_surface(widget);
-    }
-    nn_freemsg (msg);
   }
   return TRUE;
 }
@@ -580,8 +593,6 @@ app_activate (GtkApplication *app,
 {
   GtkWidget *window;
   window = gtk_application_window_new (app);
-  if (piboard.remote)
-    gtk_window_set_title (GTK_WINDOW (window), piboard.remote);
   gtk_window_fullscreen(GTK_WINDOW(window));
 
   g_signal_connect (window, "destroy", G_CALLBACK (window_close), NULL);
@@ -608,22 +619,29 @@ app_activate (GtkApplication *app,
   gtk_widget_set_can_focus (drawing_area, TRUE);
   gtk_widget_add_events (drawing_area, 
                          GDK_KEY_PRESS_MASK | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
-  if (!piboard.remote)
+  if (!piboard.clients)
   {
-    piboard.nn_socket = nn_socket (AF_SP, NN_PUB);
-    nn_bind (piboard.nn_socket, "tcp://*:7789");
-    piboard.saved = fopen (piboard.saveto ? piboard.saveto : DEFAULT_SAVETO, "w");
-    fprintf (piboard.saved, "N %u\n",
-             (unsigned int)g_get_monotonic_time() / 1000);
+    piboard.nn_sockets = (int *)malloc (sizeof (int) * 2);
+    piboard.nn_sockets[0] = nn_socket (AF_SP, NN_PAIR);
+    nn_bind (piboard.nn_sockets[0], "tcp://*:7789");
+    g_timeout_add (10, nn_sub, drawing_area);
+    piboard.nn_sockets[1] = -1;
   }
   else
   {
-    piboard.nn_socket = nn_socket (AF_SP, NN_SUB);
-    nn_setsockopt(piboard.nn_socket, NN_SUB, NN_SUB_SUBSCRIBE, "", 0);
-    g_timeout_add (10, nn_sub, drawing_area);
-    char url[64];
-    sprintf (url, "tcp://%s:7789", piboard.remote);
-    nn_connect (piboard.nn_socket, url);
+    for(int i = 0; piboard.clients[i]; i++)
+    {
+      piboard.nn_sockets = (int *)realloc (piboard.nn_sockets,
+                                           sizeof (int) * (i + 2));
+      piboard.nn_sockets[i] = nn_socket (AF_SP, NN_PAIR);
+      char url[64];
+      sprintf (url, "tcp://%s:7789", piboard.clients[i]);
+      nn_connect (piboard.nn_sockets[i], url);
+      piboard.nn_sockets[i + 1] = -1;
+    }
+    piboard.saved = fopen (piboard.saveto ? piboard.saveto : DEFAULT_SAVETO, "w");
+    fprintf (piboard.saved, "N %u\n",
+             (unsigned int)g_get_monotonic_time() / 1000);
   }
 
   gtk_window_set_keep_above (GTK_WINDOW(window), TRUE);
@@ -639,7 +657,7 @@ main (int    argc,
   memset (&piboard, 0, sizeof (struct PiBoardApp));
 
   piboard.app = gtk_application_new ("com.pi-classroom.piboard",
-                                     G_APPLICATION_FLAGS_NONE);
+                                     0);
 
   g_signal_connect (piboard.app,
                     "activate",
@@ -647,12 +665,12 @@ main (int    argc,
 
   const GOptionEntry options[] = {
                                    {
-                                     .long_name       = "remote",
-                                     .short_name      = 'r',
+                                     .long_name       = "client",
+                                     .short_name      = 'c',
                                      .flags           = G_OPTION_FLAG_NONE,
-                                     .arg             = G_OPTION_ARG_STRING,
-                                     .arg_data        = &piboard.remote,
-                                     .description     = "远程服务器地址",
+                                     .arg             = G_OPTION_ARG_STRING_ARRAY,
+                                     .arg_data        = &piboard.clients,
+                                     .description     = "客户端",
                                      .arg_description = NULL,
                                    },
                                    {
