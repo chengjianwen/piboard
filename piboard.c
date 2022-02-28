@@ -627,7 +627,7 @@ app_activate (GtkApplication *app,
   }
 
   gtk_window_set_keep_above (GTK_WINDOW(window), TRUE);
-  gtk_widget_show (window);
+  gtk_widget_show_all (window);
 }
 
 int
