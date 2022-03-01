@@ -326,7 +326,7 @@ struct PiBoardApp {
 	MyPaintResizableTiledSurface *surface;
 	MyPaintBrush                 *brush;
 	int	                     *nn_sockets;
-        char                         **remotes;
+        char                         **followers;
         char                         *output;
         char                         *channel;
         struct stroke                stroke;
@@ -442,7 +442,7 @@ key_press_event_cb (GtkWidget *widget,
     default:
          break;
   }
-  if (piboard.remotes)
+  if (piboard.followers)
   {
     for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
     {
@@ -490,7 +490,7 @@ button_release_event_cb (GtkWidget *widget,
     piboard.stroke.width = gtk_widget_get_allocated_width (widget);
     piboard.stroke.height = gtk_widget_get_allocated_height (widget);
     brush_draw (widget, &piboard.stroke);
-    if (piboard.remotes)
+    if (piboard.followers)
     {
       piboard.stroke.tag.tag = 0x00;
       for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
@@ -521,8 +521,8 @@ static void
 window_close (GtkWidget *widget,
               gpointer   data)
 {
-  if (piboard.remotes)
-    g_strfreev(piboard.remotes);
+  if (piboard.followers)
+    g_strfreev(piboard.followers);
   if (piboard.saved)
     fclose (piboard.saved);
   if (piboard.surface)
@@ -636,15 +636,15 @@ app_activate (GtkApplication *app,
   gtk_widget_set_can_focus (drawing_area, TRUE);
   gtk_widget_add_events (drawing_area, 
                          GDK_KEY_PRESS_MASK | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
-  if (piboard.remotes)
+  if (piboard.followers)
   {
-    for(int i = 0; piboard.remotes[i]; i++)
+    for(int i = 0; piboard.followers[i]; i++)
     {
       piboard.nn_sockets = (int *)realloc (piboard.nn_sockets,
                                            sizeof (int) * (i + 2));
       piboard.nn_sockets[i] = nn_socket (AF_SP, NN_PAIR);
       char url[64];
-      sprintf (url, "tcp://%s:7789", piboard.remotes[i]);
+      sprintf (url, "tcp://%s:7789", piboard.followers[i]);
       nn_connect (piboard.nn_sockets[i], url);
       piboard.nn_sockets[i + 1] = -1;
     }
@@ -697,11 +697,11 @@ main (int    argc,
 
   const GOptionEntry options[] = {
                                    {
-                                     .long_name       = "remote",
-                                     .short_name      = 's',
+                                     .long_name       = "follow",
+                                     .short_name      = 'f',
                                      .flags           = G_OPTION_FLAG_NONE,
                                      .arg             = G_OPTION_ARG_STRING_ARRAY,
-                                     .arg_data        = &piboard.remotes,
+                                     .arg_data        = &piboard.followers,
                                      .description     = "远端白板",
                                      .arg_description = NULL,
                                    },
