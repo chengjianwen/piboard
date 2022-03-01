@@ -433,7 +433,10 @@ key_press_event_cb (GtkWidget *widget,
          sprintf (command.buf, "systemctl --user restart piboard");
          break;
     case GDK_KEY_q:
-         sprintf (command.buf, "systemctl --user stop mumble");
+         if (piboard.channel)
+           sprintf (command.buf, "systemctl --user stop mumble@%s", piboard.channel);
+         else
+           sprintf (command.buf, "systemctl --user stop mumble");
          g_application_quit(G_APPLICATION(piboard.app));
          break;
     default:
