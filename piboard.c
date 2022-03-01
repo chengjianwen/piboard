@@ -21,8 +21,6 @@
 #define	DEFAULT_XTILT		0.0
 // 缺省Y倾角值
 #define	DEFAULT_YTILT		0.0
-// 缺省保存文件名
-#define DEFAULT_SAVETO          "output.txt"
 /*
 /usr/share/mypaint-data/1.0/brushes/classic/kabura.myb
 */
@@ -318,13 +316,19 @@ struct key {
     int keyval;   
 };
 
+struct command {
+    struct tag tag;
+    char  buf[1024];
+};
+    
 struct PiBoardApp {
         GtkApplication *app;
 	MyPaintResizableTiledSurface *surface;
 	MyPaintBrush                 *brush;
 	int	                     *nn_sockets;
-        char                         **servants;
+        char                         **remotes;
         char                         *output;
+        char                         *channel;
         struct stroke                stroke;
         FILE                         *saved;
 };
@@ -420,29 +424,31 @@ key_press_event_cb (GtkWidget *widget,
                     GdkEventKey *event,
                     gpointer data)
 {
+  struct command command;
+  command.tag.tag = 0x02;
   switch (event->keyval)
   {
     case GDK_KEY_c:
          clear_surface(widget);
+         sprintf (command.buf, "systemctl --user restart piboard");
          break;
     case GDK_KEY_q:
+         sprintf (command.buf, "systemctl --user stop mumble");
          g_application_quit(G_APPLICATION(piboard.app));
          break;
     default:
          break;
   }
-  if (piboard.servants)
+  if (piboard.remotes)
   {
-    struct key key;
-    key.tag.tag = 0x01;
-    key.keyval = event->keyval;
     for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
     {
-      nn_send (piboard.nn_sockets[i], &key, sizeof (struct key), NN_DONTWAIT);
+      nn_send (piboard.nn_sockets[i], &command, sizeof (struct command), NN_DONTWAIT);
     }
-    fprintf (piboard.saved, "K %d %u\n",
-           event->keyval,
-           event->time);
+    if (piboard.saved)
+      fprintf (piboard.saved, "K %d %u\n",
+               event->keyval,
+               event->time);
   }
   return TRUE;
 }
@@ -481,7 +487,7 @@ button_release_event_cb (GtkWidget *widget,
     piboard.stroke.width = gtk_widget_get_allocated_width (widget);
     piboard.stroke.height = gtk_widget_get_allocated_height (widget);
     brush_draw (widget, &piboard.stroke);
-    if (piboard.servants)
+    if (piboard.remotes)
     {
       piboard.stroke.tag.tag = 0x00;
       for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
@@ -489,16 +495,19 @@ button_release_event_cb (GtkWidget *widget,
                  &piboard.stroke,
                  sizeof (struct stroke) - sizeof (struct motion) * (MAX_MOTION_LENGTH - piboard.stroke.length),
                  NN_DONTWAIT);
-      for (int i = 0; i < piboard.stroke.length; i++)
-        fprintf (piboard.saved, "M %.02f %.02f %.02f %u\n",
-                 piboard.stroke.motions[i].x,
-                 piboard.stroke.motions[i].y,
-                 piboard.stroke.motions[i].pressure,
-                 piboard.stroke.motions[i].time);
-      fprintf (piboard.saved, "R %d %d %u\n",
-               piboard.stroke.width,
-               piboard.stroke.height,
-               event->time);
+      if (piboard.saved)
+      {
+        for (int i = 0; i < piboard.stroke.length; i++)
+          fprintf (piboard.saved, "M %.02f %.02f %.02f %u\n",
+                   piboard.stroke.motions[i].x,
+                   piboard.stroke.motions[i].y,
+                   piboard.stroke.motions[i].pressure,
+                   piboard.stroke.motions[i].time);
+        fprintf (piboard.saved, "R %d %d %u\n",
+                 piboard.stroke.width,
+                 piboard.stroke.height,
+                 event->time);
+      }
     }
     piboard.stroke.length = 0;
   }
@@ -509,8 +518,8 @@ static void
 window_close (GtkWidget *widget,
               gpointer   data)
 {
-  if (piboard.servants)
-    g_strfreev(piboard.servants);
+  if (piboard.remotes)
+    g_strfreev(piboard.remotes);
   if (piboard.saved)
     fclose (piboard.saved);
   if (piboard.surface)
@@ -581,6 +590,11 @@ nn_sub(gpointer data)
         if (key->keyval == GDK_KEY_c)
           clear_surface(widget);
       }
+      else if (tag->tag == 0x02)
+      {
+        struct command *command = (struct command *)msg;
+        system(command->buf);
+      }
       nn_freemsg (msg);
     }
   }
@@ -619,30 +633,36 @@ app_activate (GtkApplication *app,
   gtk_widget_set_can_focus (drawing_area, TRUE);
   gtk_widget_add_events (drawing_area, 
                          GDK_KEY_PRESS_MASK | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
-  if (piboard.servants)
+  if (piboard.remotes)
   {
-    for(int i = 0; piboard.servants[i]; i++)
+    for(int i = 0; piboard.remotes[i]; i++)
     {
       piboard.nn_sockets = (int *)realloc (piboard.nn_sockets,
                                            sizeof (int) * (i + 2));
       piboard.nn_sockets[i] = nn_socket (AF_SP, NN_PAIR);
       char url[64];
-      sprintf (url, "tcp://%s:7789", piboard.servants[i]);
+      sprintf (url, "tcp://%s:7789", piboard.remotes[i]);
       nn_connect (piboard.nn_sockets[i], url);
       piboard.nn_sockets[i + 1] = -1;
     }
     // 等待连接建立
     sleep(1);
-    struct key key;
-    key.tag.tag = 0x01;
-    key.keyval = GDK_KEY_c;
-    for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
-      nn_send (piboard.nn_sockets[i], &key, sizeof (struct key), NN_DONTWAIT);
 
-    piboard.saved = fopen (piboard.output ? piboard.output : DEFAULT_SAVETO, "w");
-    fprintf (piboard.saved, "K %d %u\n",
-             GDK_KEY_c,
-             (unsigned int)g_get_monotonic_time() / 1000);
+    struct command command;
+    command.tag.tag = 0x02;
+    if (piboard.channel)
+      sprintf (command.buf, "systemctl --user start mumble@%s", piboard.channel);
+    else
+      sprintf (command.buf, "systemctl --user start mumble");
+    for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
+      nn_send (piboard.nn_sockets[i], &command, sizeof (struct command), NN_DONTWAIT);
+
+    if (piboard.output)
+      piboard.saved = fopen (piboard.output, "w");
+    if (piboard.saved)
+      fprintf (piboard.saved, "K %d %u\n",
+               GDK_KEY_c,
+               (unsigned int)g_get_monotonic_time() / 1000);
   }
   else
   {
@@ -674,21 +694,30 @@ main (int    argc,
 
   const GOptionEntry options[] = {
                                    {
-                                     .long_name       = "servant",
+                                     .long_name       = "remote",
                                      .short_name      = 's',
                                      .flags           = G_OPTION_FLAG_NONE,
                                      .arg             = G_OPTION_ARG_STRING_ARRAY,
-                                     .arg_data        = &piboard.servants,
-                                     .description     = "客户端",
+                                     .arg_data        = &piboard.remotes,
+                                     .description     = "远端白板",
                                      .arg_description = NULL,
                                    },
                                    {
                                      .long_name       = "output",
                                      .short_name      = 'o',
-                                     .flags           = G_OPTION_FLAG_FILENAME,
+                                     .flags           = G_OPTION_FLAG_NONE,
                                      .arg             = G_OPTION_ARG_FILENAME,
                                      .arg_data        = &piboard.output,
-                                     .description     = "保存文件名，缺省为: output.txt",
+                                     .description     = "保存文件名",
+                                     .arg_description = NULL,
+                                   },
+                                   {
+                                     .long_name       = "channel",
+                                     .short_name      = 'c',
+                                     .flags           = G_OPTION_FLAG_NONE,
+                                     .arg             = G_OPTION_ARG_STRING,
+                                     .arg_data        = &piboard.channel,
+                                     .description     = "频道名称",
                                      .arg_description = NULL,
                                    },
                                    {
