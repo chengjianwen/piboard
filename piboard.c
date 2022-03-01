@@ -323,8 +323,8 @@ struct PiBoardApp {
 	MyPaintResizableTiledSurface *surface;
 	MyPaintBrush                 *brush;
 	int	                     *nn_sockets;
-        char                         **clients;
-        char                         *saveto;
+        char                         **servants;
+        char                         *output;
         struct stroke                stroke;
         FILE                         *saved;
 };
@@ -431,7 +431,7 @@ key_press_event_cb (GtkWidget *widget,
     default:
          break;
   }
-  if (piboard.clients)
+  if (piboard.servants)
   {
     struct key key;
     key.tag.tag = 0x01;
@@ -481,7 +481,7 @@ button_release_event_cb (GtkWidget *widget,
     piboard.stroke.width = gtk_widget_get_allocated_width (widget);
     piboard.stroke.height = gtk_widget_get_allocated_height (widget);
     brush_draw (widget, &piboard.stroke);
-    if (piboard.clients)
+    if (piboard.servants)
     {
       piboard.stroke.tag.tag = 0x00;
       for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
@@ -509,8 +509,8 @@ static void
 window_close (GtkWidget *widget,
               gpointer   data)
 {
-  if (piboard.clients)
-    g_strfreev(piboard.clients);
+  if (piboard.servants)
+    g_strfreev(piboard.servants);
   if (piboard.saved)
     fclose (piboard.saved);
   if (piboard.surface)
@@ -619,29 +619,38 @@ app_activate (GtkApplication *app,
   gtk_widget_set_can_focus (drawing_area, TRUE);
   gtk_widget_add_events (drawing_area, 
                          GDK_KEY_PRESS_MASK | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
-  if (!piboard.clients)
+  if (piboard.servants)
+  {
+    for(int i = 0; piboard.servants[i]; i++)
+    {
+      piboard.nn_sockets = (int *)realloc (piboard.nn_sockets,
+                                           sizeof (int) * (i + 2));
+      piboard.nn_sockets[i] = nn_socket (AF_SP, NN_PAIR);
+      char url[64];
+      sprintf (url, "tcp://%s:7789", piboard.servants[i]);
+      nn_connect (piboard.nn_sockets[i], url);
+      piboard.nn_sockets[i + 1] = -1;
+    }
+    // 等待连接建立
+    sleep(1);
+    struct key key;
+    key.tag.tag = 0x01;
+    key.keyval = GDK_KEY_c;
+    for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
+      nn_send (piboard.nn_sockets[i], &key, sizeof (struct key), NN_DONTWAIT);
+
+    piboard.saved = fopen (piboard.output ? piboard.output : DEFAULT_SAVETO, "w");
+    fprintf (piboard.saved, "K %d %u\n",
+             GDK_KEY_c,
+             (unsigned int)g_get_monotonic_time() / 1000);
+  }
+  else
   {
     piboard.nn_sockets = (int *)malloc (sizeof (int) * 2);
     piboard.nn_sockets[0] = nn_socket (AF_SP, NN_PAIR);
     nn_bind (piboard.nn_sockets[0], "tcp://*:7789");
     g_timeout_add (10, nn_sub, drawing_area);
     piboard.nn_sockets[1] = -1;
-  }
-  else
-  {
-    for(int i = 0; piboard.clients[i]; i++)
-    {
-      piboard.nn_sockets = (int *)realloc (piboard.nn_sockets,
-                                           sizeof (int) * (i + 2));
-      piboard.nn_sockets[i] = nn_socket (AF_SP, NN_PAIR);
-      char url[64];
-      sprintf (url, "tcp://%s:7789", piboard.clients[i]);
-      nn_connect (piboard.nn_sockets[i], url);
-      piboard.nn_sockets[i + 1] = -1;
-    }
-    piboard.saved = fopen (piboard.saveto ? piboard.saveto : DEFAULT_SAVETO, "w");
-    fprintf (piboard.saved, "N %u\n",
-             (unsigned int)g_get_monotonic_time() / 1000);
   }
 
   gtk_window_set_keep_above (GTK_WINDOW(window), TRUE);
@@ -665,20 +674,20 @@ main (int    argc,
 
   const GOptionEntry options[] = {
                                    {
-                                     .long_name       = "client",
-                                     .short_name      = 'c',
+                                     .long_name       = "servant",
+                                     .short_name      = 's',
                                      .flags           = G_OPTION_FLAG_NONE,
                                      .arg             = G_OPTION_ARG_STRING_ARRAY,
-                                     .arg_data        = &piboard.clients,
+                                     .arg_data        = &piboard.servants,
                                      .description     = "客户端",
                                      .arg_description = NULL,
                                    },
                                    {
-                                     .long_name       = "saveto",
-                                     .short_name      = 's',
-                                     .flags           = G_OPTION_FLAG_NONE,
+                                     .long_name       = "output",
+                                     .short_name      = 'o',
+                                     .flags           = G_OPTION_FLAG_FILENAME,
                                      .arg             = G_OPTION_ARG_FILENAME,
-                                     .arg_data        = &piboard.saveto,
+                                     .arg_data        = &piboard.output,
                                      .description     = "保存文件名，缺省为: output.txt",
                                      .arg_description = NULL,
                                    },
