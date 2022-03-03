@@ -827,7 +827,9 @@ app_activate (GtkApplication *app,
     piboard.nn_sockets[1] = -1;
   }
 
+  gtk_window_fullscreen(GTK_WINDOW(window));
   gtk_window_set_keep_above (GTK_WINDOW(window), TRUE);
+  
   gtk_widget_show_all (window);
 }
 
