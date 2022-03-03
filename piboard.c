@@ -11,6 +11,7 @@
 #include <nanomsg/pair.h>
 #include <ctype.h>
 #include <math.h>
+#include <assert.h>
 #include "mypaint-resizable-tiled-surface.h"
 
 #pragma pack(4)
@@ -291,6 +292,8 @@ static char *brush = "{"
                      "\"version\": 3"
                   "}";
 #define	MAX_MOTION_LENGTH	1024
+#define MAX_COMMAND_LENGTH      1024
+#define MAX_IMG_LENGTH          1024000
 
 struct tag {
     int tag;
@@ -318,9 +321,15 @@ struct key {
 
 struct command {
     struct tag tag;
-    char  buf[1024];
+    char  buf[MAX_COMMAND_LENGTH];
 };
     
+struct img {
+    struct tag tag;
+    int    length;
+    char   buf[MAX_IMG_LENGTH];
+};
+
 struct PiBoardApp {
         GtkApplication *app;
 	MyPaintResizableTiledSurface *surface;
@@ -340,13 +349,33 @@ screen_draw (GtkWidget *widget,
              cairo_t *cr,
              gpointer   data)
 {
+  GdkRectangle rect;
+  MyPaintTiledSurface *surface = (MyPaintTiledSurface *)piboard.surface;
+
+  if (gdk_cairo_get_clip_rectangle (cr, &rect))
+  {
+    if (surface->dirty_bbox.x > rect.x)
+    {
+      surface->dirty_bbox.width += surface->dirty_bbox.x - rect.x;
+      surface->dirty_bbox.x = rect.x;
+    }
+    if (surface->dirty_bbox.y > rect.y)
+    {
+      surface->dirty_bbox.height += surface->dirty_bbox.y - rect.y;
+      surface->dirty_bbox.y = rect.y;
+    }
+    if (surface->dirty_bbox.x + surface->dirty_bbox.width < rect.x + rect.width)
+      surface->dirty_bbox.width += rect.x + rect.width - (surface->dirty_bbox.x + surface->dirty_bbox.width);
+    if (surface->dirty_bbox.y + surface->dirty_bbox.height < rect.y + rect.height)
+      surface->dirty_bbox.height += rect.y + rect.height - (surface->dirty_bbox.y + surface->dirty_bbox.height);
+  }
+
   int width = mypaint_resizable_tiled_surface_get_width (piboard.surface);
   int height = mypaint_resizable_tiled_surface_get_height (piboard.surface);
 
   int tile_size = MYPAINT_TILE_SIZE;
   int number_of_tile_rows = mypaint_resizable_tiled_surface_number_of_tile_rows (piboard.surface);
   int tiles_per_rows = mypaint_resizable_tiled_surface_tiles_per_rows (piboard.surface);
-  MyPaintTiledSurface *surface = (MyPaintTiledSurface *)piboard.surface;
 
   for (int tx = floor((double)surface->dirty_bbox.x / tile_size); tx < ceil((double)(surface->dirty_bbox.x + surface->dirty_bbox.width) / tile_size); tx++)
   {
@@ -379,6 +408,10 @@ screen_draw (GtkWidget *widget,
       mypaint_tiled_surface_tile_request_end(surface, &request);
     }
   }
+  surface->dirty_bbox.x = 0;
+  surface->dirty_bbox.y = 0;
+  surface->dirty_bbox.width = 0;
+  surface->dirty_bbox.height = 0;
   return FALSE;
 }
 
@@ -412,6 +445,57 @@ brush_draw (GtkWidget *widget, struct stroke *stroke)
   gtk_widget_queue_draw_area(widget, roi.x, roi.y, roi.width, roi.height);
 }
 
+static void
+image_draw (GtkWidget *widget, const char *filename)
+{
+  GdkPixbuf *pix = gdk_pixbuf_new_from_file(filename,
+                                             NULL);
+  char *pixels = (char *)gdk_pixbuf_read_pixels (pix);
+  int n_channels = gdk_pixbuf_get_n_channels (pix);
+  int rowstride = gdk_pixbuf_get_rowstride (pix);
+
+  int width = mypaint_resizable_tiled_surface_get_width (piboard.surface);
+  if (width > gdk_pixbuf_get_width(pix))
+    width =  gdk_pixbuf_get_width(pix);
+  int height = mypaint_resizable_tiled_surface_get_height (piboard.surface);
+  if (height > gdk_pixbuf_get_height(pix))
+    height=  gdk_pixbuf_get_height(pix);
+
+  int tile_size = MYPAINT_TILE_SIZE;
+  int number_of_tile_rows = mypaint_resizable_tiled_surface_number_of_tile_rows (piboard.surface);
+  int tiles_per_rows = mypaint_resizable_tiled_surface_tiles_per_rows (piboard.surface);
+  MyPaintTiledSurface *surface = (MyPaintTiledSurface *)piboard.surface;
+
+  for (int tx = 0; tx < ceil((double)width / tile_size); tx++)
+  {
+    for (int ty = 0; ty < ceil((double)height / tile_size); ty++)
+    {
+      int max_x = tx < tiles_per_rows - 1 || width % tile_size == 0 ? tile_size : width % tile_size;
+      int max_y = ty < number_of_tile_rows - 1 || height % tile_size == 0 ? tile_size : height % tile_size;
+      MyPaintTileRequest request;
+      mypaint_tile_request_init(&request, 0, tx, ty, FALSE);
+      mypaint_tiled_surface_tile_request_start(surface, &request);
+
+      for (int y = 0; y < max_y; y++)
+      {
+        for (int x = 0; x < max_x; x++)
+        {
+          request.buffer[(tile_size * y + x) * 4]  = pixels[(ty * tile_size + y) * rowstride + (tx * tile_size + x) * n_channels] << 7;
+          request.buffer[(tile_size * y + x) * 4 + 1]  = pixels[(ty * tile_size + y) * rowstride + (tx * tile_size + x) * n_channels + 1] << 7;
+          request.buffer[(tile_size * y + x) * 4 + 2]  = pixels[(ty * tile_size + y) * rowstride + (tx * tile_size + x) * n_channels + 2] << 7;
+        }
+      }
+      mypaint_tiled_surface_tile_request_end(surface, &request);
+    }
+  }
+  g_object_unref(pix);
+  surface->dirty_bbox.x = 0;
+  surface->dirty_bbox.y = 0;
+  surface->dirty_bbox.width = width;
+  surface->dirty_bbox.height = height;
+  gtk_widget_queue_draw_area (widget, 0, 0, width, height);
+}
+
 static void 
 clear_surface (GtkWidget *widget)
 {
@@ -425,19 +509,63 @@ key_press_event_cb (GtkWidget *widget,
                     gpointer data)
 {
   struct command command;
+  struct img img;
+  gboolean quit = FALSE;
+  GtkWidget *dialog;
   command.tag.tag = 0x02;
+  img.tag.tag = 0x03;
   switch (event->keyval)
   {
     case GDK_KEY_c:
          clear_surface(widget);
          sprintf (command.buf, "systemctl --user restart piboard");
          break;
+    case GDK_KEY_i:
+         dialog = gtk_file_chooser_dialog_new ("Open File",
+                                                NULL,
+                                                GTK_FILE_CHOOSER_ACTION_OPEN,
+                                                "_Cancel",
+                                                GTK_RESPONSE_CANCEL,
+                                                "_Open",
+                                                GTK_RESPONSE_ACCEPT,
+                                                NULL);
+         gtk_dialog_run (GTK_DIALOG (dialog));
+         char *filename = gtk_file_chooser_get_filename (GTK_FILE_CHOOSER (dialog));
+         gtk_widget_destroy (dialog);
+         if (filename)
+         {
+           FILE *fp = fopen (filename, "r");
+           if (fp)
+           {
+             fseek(fp, 0, SEEK_END);
+             struct img img;
+             img.tag.tag = 0x03;
+             img.length = ftell(fp);
+             rewind(fp);
+             fread(img.buf, MAX_IMG_LENGTH, 1, fp);
+             fclose (fp);
+             if (piboard.followers)
+             {
+               for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
+               {
+                 nn_send (piboard.nn_sockets[i],
+                          &img,
+                          sizeof (struct img) - (MAX_IMG_LENGTH - img.length),
+                          NN_DONTWAIT);
+               }
+             }
+             image_draw(widget,
+                        filename);
+           }
+           free (filename);
+         }
+         break;
     case GDK_KEY_q:
          if (piboard.channel)
            sprintf (command.buf, "systemctl --user stop mumble@%s", piboard.channel);
          else
            sprintf (command.buf, "systemctl --user stop mumble");
-         g_application_quit(G_APPLICATION(piboard.app));
+         quit = TRUE;
          break;
     default:
          break;
@@ -446,13 +574,24 @@ key_press_event_cb (GtkWidget *widget,
   {
     for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
     {
-      nn_send (piboard.nn_sockets[i], &command, sizeof (struct command), NN_DONTWAIT);
+      nn_send (piboard.nn_sockets[i],
+               &command,
+               sizeof (struct command) - (MAX_COMMAND_LENGTH - strlen(command.buf)) + 1,
+               NN_DONTWAIT);
     }
     if (piboard.saved)
       fprintf (piboard.saved, "K %d %u\n",
                event->keyval,
                event->time);
   }
+
+  if (quit)
+  {
+    // 等待命令被发送
+    sleep(1);
+    g_application_quit(G_APPLICATION(piboard.app));
+  }
+
   return TRUE;
 }
 
@@ -547,7 +686,7 @@ configure_event_cb (GtkWidget         *widget,
   }
 
   piboard.surface = mypaint_resizable_tiled_surface_new(gtk_widget_get_allocated_width (widget),
-                                            gtk_widget_get_allocated_height(widget));
+                                                        gtk_widget_get_allocated_height(widget));
 
   if (!piboard.brush)
   {
@@ -598,6 +737,16 @@ nn_sub(gpointer data)
         struct command *command = (struct command *)msg;
         system(command->buf);
       }
+      else if (tag->tag == 0x03)
+      {
+        struct img *img= (struct img *)msg;
+        char *filename = strdup(tmpnam(NULL));
+        FILE *fp = fopen (filename, "w+");
+        fwrite(img->buf, img->length, 1, fp);
+        fclose (fp);
+        image_draw (widget, filename);
+        free (filename);
+      }
       nn_freemsg (msg);
     }
   }
@@ -610,7 +759,6 @@ app_activate (GtkApplication *app,
 {
   GtkWidget *window;
   window = gtk_application_window_new (app);
-  gtk_window_fullscreen(GTK_WINDOW(window));
 
   g_signal_connect (window, "destroy", G_CALLBACK (window_close), NULL);
 
@@ -658,7 +806,10 @@ app_activate (GtkApplication *app,
     else
       sprintf (command.buf, "systemctl --user start mumble");
     for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
-      nn_send (piboard.nn_sockets[i], &command, sizeof (struct command), NN_DONTWAIT);
+      nn_send (piboard.nn_sockets[i],
+               &command,
+               sizeof (struct command) - (MAX_COMMAND_LENGTH - strlen(command.buf)) + 1,
+               NN_DONTWAIT);
 
     if (piboard.output)
       piboard.saved = fopen (piboard.output, "w");
