@@ -350,25 +350,8 @@ screen_draw (GtkWidget *widget,
              gpointer   data)
 {
   GdkRectangle rect;
-  MyPaintTiledSurface *surface = (MyPaintTiledSurface *)piboard.surface;
-
-  if (gdk_cairo_get_clip_rectangle (cr, &rect))
-  {
-    if (surface->dirty_bbox.x > rect.x)
-    {
-      surface->dirty_bbox.width += surface->dirty_bbox.x - rect.x;
-      surface->dirty_bbox.x = rect.x;
-    }
-    if (surface->dirty_bbox.y > rect.y)
-    {
-      surface->dirty_bbox.height += surface->dirty_bbox.y - rect.y;
-      surface->dirty_bbox.y = rect.y;
-    }
-    if (surface->dirty_bbox.x + surface->dirty_bbox.width < rect.x + rect.width)
-      surface->dirty_bbox.width += rect.x + rect.width - (surface->dirty_bbox.x + surface->dirty_bbox.width);
-    if (surface->dirty_bbox.y + surface->dirty_bbox.height < rect.y + rect.height)
-      surface->dirty_bbox.height += rect.y + rect.height - (surface->dirty_bbox.y + surface->dirty_bbox.height);
-  }
+  if (!gdk_cairo_get_clip_rectangle (cr, &rect))
+    return FALSE;
 
   int width = mypaint_resizable_tiled_surface_get_width (piboard.surface);
   int height = mypaint_resizable_tiled_surface_get_height (piboard.surface);
@@ -377,9 +360,11 @@ screen_draw (GtkWidget *widget,
   int number_of_tile_rows = mypaint_resizable_tiled_surface_number_of_tile_rows (piboard.surface);
   int tiles_per_rows = mypaint_resizable_tiled_surface_tiles_per_rows (piboard.surface);
 
-  for (int tx = floor((double)surface->dirty_bbox.x / tile_size); tx < ceil((double)(surface->dirty_bbox.x + surface->dirty_bbox.width) / tile_size); tx++)
+  MyPaintTiledSurface *surface = (MyPaintTiledSurface *)piboard.surface;
+
+  for (int tx = floor((double)rect.x  / tile_size); tx < ceil((double)(rect.x + rect.width) / tile_size); tx++)
   {
-    for (int ty = floor((double)surface->dirty_bbox.y / tile_size); ty < ceil((double)(surface->dirty_bbox.y + surface->dirty_bbox.height) / tile_size); ty++)
+    for (int ty = floor((double)rect.y / tile_size); ty < ceil((double)(rect.y + rect.height) / tile_size); ty++)
     {
       int max_x = tx < tiles_per_rows - 1 || width % tile_size == 0 ? tile_size : width % tile_size;
       int max_y = ty < number_of_tile_rows - 1 || height % tile_size == 0 ? tile_size : height % tile_size;
@@ -408,11 +393,7 @@ screen_draw (GtkWidget *widget,
       mypaint_tiled_surface_tile_request_end(surface, &request);
     }
   }
-  surface->dirty_bbox.x = 0;
-  surface->dirty_bbox.y = 0;
-  surface->dirty_bbox.width = 0;
-  surface->dirty_bbox.height = 0;
-  return FALSE;
+  return TRUE;
 }
 
 static void
@@ -700,7 +681,6 @@ configure_event_cb (GtkWidget         *widget,
       mypaint_brush_set_base_value(piboard.brush, MYPAINT_BRUSH_SETTING_COLOR_V, 0.0);
     }
   }
-
   return TRUE;
 }
 
@@ -772,8 +752,6 @@ app_activate (GtkApplication *app,
   g_signal_connect (drawing_area, "configure-event",
                     G_CALLBACK (configure_event_cb), NULL);
 
-  g_signal_connect (drawing_area, "draw",
-                    G_CALLBACK (screen_draw), NULL);
   g_signal_connect (drawing_area, "button-release-event",
                     G_CALLBACK (button_release_event_cb), NULL);
   g_signal_connect (drawing_area, "key-press-event",
@@ -830,6 +808,10 @@ app_activate (GtkApplication *app,
   gtk_window_fullscreen(GTK_WINDOW(window));
   gtk_window_set_keep_above (GTK_WINDOW(window), TRUE);
   
+  g_signal_connect (drawing_area,
+                    "draw",
+                    G_CALLBACK (screen_draw), NULL);
+
   gtk_widget_show_all (window);
 }
 
