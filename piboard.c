@@ -340,6 +340,7 @@ struct PiBoardApp {
         char                         *channel;
         struct stroke                stroke;
         FILE                         *saved;
+        gboolean                     forcedraw;
 };
 
 struct PiBoardApp	piboard;
@@ -356,6 +357,20 @@ screen_draw (GtkWidget *widget,
   int width = mypaint_resizable_tiled_surface_get_width (piboard.surface);
   int height = mypaint_resizable_tiled_surface_get_height (piboard.surface);
 
+/*
+ * 刷屏？算了吧，这事不能干，别把WM想得太聪明
+ * 除非必须刷屏(forcedraw)
+ * 改换门庭到Wayland?
+ */
+  if (rect.x == 0
+  && rect.y == 0
+  && rect.width == width
+  && rect.height == height
+  && !piboard.forcedraw)
+    return FALSE;
+
+  if (piboard.forcedraw)
+    piboard.forcedraw = FALSE;
   int tile_size = MYPAINT_TILE_SIZE;
   int number_of_tile_rows = mypaint_resizable_tiled_surface_number_of_tile_rows (piboard.surface);
   int tiles_per_rows = mypaint_resizable_tiled_surface_tiles_per_rows (piboard.surface);
@@ -393,6 +408,10 @@ screen_draw (GtkWidget *widget,
       mypaint_tiled_surface_tile_request_end(surface, &request);
     }
   }
+  surface->dirty_bbox.x = 0;
+  surface->dirty_bbox.y = 0;
+  surface->dirty_bbox.width = 0;
+  surface->dirty_bbox.height = 0;
   return TRUE;
 }
 
@@ -431,6 +450,10 @@ image_draw (GtkWidget *widget, const char *filename)
 {
   GdkPixbuf *pix = gdk_pixbuf_new_from_file(filename,
                                              NULL);
+  printf ("bits per pixels: %d\n",
+           gdk_pixbuf_get_bits_per_sample(pix));
+  printf ("rowstride: %d\n",
+           gdk_pixbuf_get_rowstride(pix));
   char *pixels = (char *)gdk_pixbuf_read_pixels (pix);
   int n_channels = gdk_pixbuf_get_n_channels (pix);
   int rowstride = gdk_pixbuf_get_rowstride (pix);
@@ -470,10 +493,7 @@ image_draw (GtkWidget *widget, const char *filename)
     }
   }
   g_object_unref(pix);
-  surface->dirty_bbox.x = 0;
-  surface->dirty_bbox.y = 0;
-  surface->dirty_bbox.width = width;
-  surface->dirty_bbox.height = height;
+  piboard.forcedraw = TRUE;
   gtk_widget_queue_draw_area (widget, 0, 0, width, height);
 }
 
@@ -500,6 +520,10 @@ key_press_event_cb (GtkWidget *widget,
     case GDK_KEY_c:
          clear_surface(widget);
          sprintf (command.buf, "systemctl --user restart piboard");
+         break;
+    case GDK_KEY_l:
+         piboard.forcedraw = TRUE;
+         gtk_widget_queue_draw(widget);
          break;
     case GDK_KEY_i:
          dialog = gtk_file_chooser_dialog_new ("Open File",
@@ -543,7 +567,7 @@ key_press_event_cb (GtkWidget *widget,
          break;
     case GDK_KEY_q:
          if (piboard.channel)
-           sprintf (command.buf, "systemctl --user stop mumble@%s", piboard.channel);
+           sprintf (command.buf, "systemctl --user stop mumble@`systemd-escape %s`", piboard.channel);
          else
            sprintf (command.buf, "systemctl --user stop mumble");
          quit = TRUE;
@@ -665,9 +689,9 @@ configure_event_cb (GtkWidget         *widget,
   {
     mypaint_surface_unref ((MyPaintSurface *)piboard.surface);
   }
-
   piboard.surface = mypaint_resizable_tiled_surface_new(gtk_widget_get_allocated_width (widget),
                                                         gtk_widget_get_allocated_height(widget));
+
 
   if (!piboard.brush)
   {
@@ -749,6 +773,10 @@ app_activate (GtkApplication *app,
   gtk_container_add (GTK_CONTAINER (window), drawing_area);
 
   /* Signals used to handle the backing surface */
+  g_signal_connect (drawing_area,
+                    "draw",
+                    G_CALLBACK (screen_draw), NULL);
+
   g_signal_connect (drawing_area, "configure-event",
                     G_CALLBACK (configure_event_cb), NULL);
 
@@ -780,9 +808,15 @@ app_activate (GtkApplication *app,
     struct command command;
     command.tag.tag = 0x02;
     if (piboard.channel)
-      sprintf (command.buf, "systemctl --user start mumble@%s", piboard.channel);
+      sprintf (command.buf, "systemctl --user start mumble@`systemd-escape %s`", piboard.channel);
     else
       sprintf (command.buf, "systemctl --user start mumble");
+    for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
+      nn_send (piboard.nn_sockets[i],
+               &command,
+               sizeof (struct command) - (MAX_COMMAND_LENGTH - strlen(command.buf)) + 1,
+               NN_DONTWAIT);
+    sprintf (command.buf, "systemctl --user restart piboard");
     for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
       nn_send (piboard.nn_sockets[i],
                &command,
@@ -808,11 +842,9 @@ app_activate (GtkApplication *app,
   gtk_window_fullscreen(GTK_WINDOW(window));
   gtk_window_set_keep_above (GTK_WINDOW(window), TRUE);
   
-  g_signal_connect (drawing_area,
-                    "draw",
-                    G_CALLBACK (screen_draw), NULL);
-
   gtk_widget_show_all (window);
+  gtk_window_set_decorated (GTK_WINDOW(window),
+                            FALSE);
 }
 
 int
