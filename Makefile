@@ -3,10 +3,10 @@ all: piboard piplay
 CFLAGS	= `pkg-config --cflags gtk+-3.0 libmypaint nanomsg` -g
 
 piboard: piboard.o mypaint-resizable-tiled-surface.o
-	$(CC) `pkg-config --libs gtk+-3.0 libmypaint nanomsg` -lm -o $@ $^
+	$(CC) -o $@ $^ `pkg-config --libs gtk+-3.0 libmypaint nanomsg` -lm
 
 piplay: piplay.o
-	$(CC) `pkg-config --libs nanomsg` -o $@ $^
+	$(CC) -o $@ $^ `pkg-config --libs nanomsg`
 
 clean:
 	rm -f piboard.o mypaint-resizable-tiled-surface.o piboard piplay
