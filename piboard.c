@@ -295,12 +295,8 @@ static char *brush = "{"
 #define MAX_COMMAND_LENGTH      1024
 #define MAX_IMG_LENGTH          1024000
 
-struct tag {
-    int tag;
-};
-
 struct stroke {
-    struct tag tag;
+    int tag;
     int length;
     int width;
     int height;
@@ -314,19 +310,14 @@ struct stroke {
     }motions[MAX_MOTION_LENGTH];
 };
 
-struct key {
-    struct tag tag;
-    int keyval;   
-};
-
 struct command {
-    struct tag tag;
+    int   tag;
     char  buf[MAX_COMMAND_LENGTH];
 };
     
 struct img {
-    struct tag tag;
-    int    length;
+    int    tag;
+    int    size;
     char   buf[MAX_IMG_LENGTH];
 };
 
@@ -340,7 +331,6 @@ struct PiBoardApp {
         char                         *channel;
         struct stroke                stroke;
         FILE                         *saved;
-        gboolean                     forcedraw;
 };
 
 struct PiBoardApp	piboard;
@@ -350,36 +340,19 @@ screen_draw (GtkWidget *widget,
              cairo_t *cr,
              gpointer   data)
 {
-  GdkRectangle rect;
-  if (!gdk_cairo_get_clip_rectangle (cr, &rect))
-    return FALSE;
+  MyPaintTiledSurface *surface = (MyPaintTiledSurface *)piboard.surface;
 
   int width = mypaint_resizable_tiled_surface_get_width (piboard.surface);
   int height = mypaint_resizable_tiled_surface_get_height (piboard.surface);
 
-/*
- * 刷屏？算了吧，这事不能干，别把WM想得太聪明
- * 除非必须刷屏(forcedraw)
- * 改换门庭到Wayland?
- */
-  if (rect.x == 0
-  && rect.y == 0
-  && rect.width == width
-  && rect.height == height
-  && !piboard.forcedraw)
-    return FALSE;
-
-  if (piboard.forcedraw)
-    piboard.forcedraw = FALSE;
   int tile_size = MYPAINT_TILE_SIZE;
   int number_of_tile_rows = mypaint_resizable_tiled_surface_number_of_tile_rows (piboard.surface);
   int tiles_per_rows = mypaint_resizable_tiled_surface_tiles_per_rows (piboard.surface);
 
-  MyPaintTiledSurface *surface = (MyPaintTiledSurface *)piboard.surface;
 
-  for (int tx = floor((double)rect.x  / tile_size); tx < ceil((double)(rect.x + rect.width) / tile_size); tx++)
+  for (int tx = floor((double)surface->dirty_bbox.x  / tile_size); tx < ceil((double)(surface->dirty_bbox.x + surface->dirty_bbox.width) / tile_size); tx++)
   {
-    for (int ty = floor((double)rect.y / tile_size); ty < ceil((double)(rect.y + rect.height) / tile_size); ty++)
+    for (int ty = floor((double)surface->dirty_bbox.y / tile_size); ty < ceil((double)(surface->dirty_bbox.y + surface->dirty_bbox.height) / tile_size); ty++)
     {
       int max_x = tx < tiles_per_rows - 1 || width % tile_size == 0 ? tile_size : width % tile_size;
       int max_y = ty < number_of_tile_rows - 1 || height % tile_size == 0 ? tile_size : height % tile_size;
@@ -446,10 +419,37 @@ brush_draw (GtkWidget *widget, struct stroke *stroke)
 }
 
 static void
-image_draw (GtkWidget *widget, const char *filename)
+image_draw (GtkWidget *widget,
+            const gchar *filename,
+            gchar **buffer,
+            gsize *size)
 {
-  GdkPixbuf *pix = gdk_pixbuf_new_from_file(filename,
-                                             NULL);
+  GError *error = NULL;
+  GdkPixbuf *pix = gdk_pixbuf_new_from_file (filename,
+                                             &error);
+  if (error)
+  {
+    fprintf (stderr, "图像文件打开失败: %s\n", filename);
+    return;
+  }
+
+  if (buffer
+  && size)
+  {
+    gdk_pixbuf_save_to_buffer (pix,
+                                buffer,
+                               size,
+                               "png",
+                               &error,
+                               NULL);
+    if (error)
+    {
+      fprintf (stderr, "图像文件保存失败: %s\n", filename);
+      return;
+    }
+  }
+
+  // 绘制图像到surface
   char *pixels = (char *)gdk_pixbuf_read_pixels (pix);
   int n_channels = gdk_pixbuf_get_n_channels (pix);
   int rowstride = gdk_pixbuf_get_rowstride (pix);
@@ -489,14 +489,22 @@ image_draw (GtkWidget *widget, const char *filename)
     }
   }
   g_object_unref(pix);
-  piboard.forcedraw = TRUE;
+
+  // 绘制到屏幕
+  surface->dirty_bbox.x = 0; 
+  surface->dirty_bbox.y = 0; 
+  surface->dirty_bbox.width = width; 
+  surface->dirty_bbox.height= height; 
   gtk_widget_queue_draw_area (widget, 0, 0, width, height);
 }
 
 static void 
 clear_surface (GtkWidget *widget)
 {
+  // 清屏
   mypaint_resizable_tiled_surface_clear (piboard.surface);
+
+  // 重绘屏幕
   gtk_widget_queue_draw (widget);
 }
 
@@ -505,23 +513,47 @@ key_press_event_cb (GtkWidget *widget,
                     GdkEventKey *event,
                     gpointer data)
 {
-  struct command command;
-  struct img img;
-  gboolean quit = FALSE;
-  GtkWidget *dialog;
-  command.tag.tag = 0x02;
-  img.tag.tag = 0x03;
   switch (event->keyval)
   {
-    case GDK_KEY_c:
+    case GDK_KEY_c:	// 清屏
+         // 本地清屏
          clear_surface(widget);
-         sprintf (command.buf, "systemctl --user restart piboard");
+
+         // 远程清屏
+         if (piboard.followers)
+         {
+           struct command command;
+           command.tag = 0x02;
+           sprintf (command.buf, "systemctl --user restart piboard");
+           for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
+           {
+             nn_send (piboard.nn_sockets[i],
+                      &command,
+                      sizeof (struct command) - (MAX_COMMAND_LENGTH - strlen(command.buf)) + 1,
+                      NN_DONTWAIT);
+           }
+         }
+
+         // 录制
+         if (piboard.saved)
+           fprintf (piboard.saved, "K %d %u\n",
+                    event->keyval,
+                    event->time);
          break;
-    case GDK_KEY_l:
-         piboard.forcedraw = TRUE;
+    case GDK_KEY_l:	// 强制刷新本地屏幕
+         ;
+         MyPaintTiledSurface *surface = (MyPaintTiledSurface *)piboard.surface;
+         int width = mypaint_resizable_tiled_surface_get_width (piboard.surface);
+         int height = mypaint_resizable_tiled_surface_get_height (piboard.surface);
+         surface->dirty_bbox.y = 0; 
+         surface->dirty_bbox.y = 0; 
+         surface->dirty_bbox.width = width; 
+         surface->dirty_bbox.height = height; 
          gtk_widget_queue_draw(widget);
          break;
-    case GDK_KEY_i:
+    case GDK_KEY_i:	// 显示一副图像
+         ;
+         GtkWidget *dialog;
          dialog = gtk_file_chooser_dialog_new ("Open File",
                                                 NULL,
                                                 GTK_FILE_CHOOSER_ACTION_OPEN,
@@ -533,64 +565,85 @@ key_press_event_cb (GtkWidget *widget,
          gtk_dialog_run (GTK_DIALOG (dialog));
          char *filename = gtk_file_chooser_get_filename (GTK_FILE_CHOOSER (dialog));
          gtk_widget_destroy (dialog);
+
          if (filename)
          {
-           FILE *fp = fopen (filename, "r");
-           if (fp)
+           // 本地绘制
+           gchar *buffer = NULL;
+           gsize size;
+           image_draw(widget,
+                      filename,
+                      &buffer,
+                      &size);
+
+           // 远程绘制
+           if (piboard.followers
+           && buffer
+           && size < MAX_IMG_LENGTH)
            {
-             fseek(fp, 0, SEEK_END);
              struct img img;
-             img.tag.tag = 0x03;
-             img.length = ftell(fp);
-             rewind(fp);
-             fread(img.buf, MAX_IMG_LENGTH, 1, fp);
-             fclose (fp);
-             if (piboard.followers)
+             img.tag = 0x03;
+             img.size = size;
+             memcpy (img.buf, buffer, size);
+             free (buffer);
+             buffer = NULL;
+
+             for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
              {
-               for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
-               {
-                 nn_send (piboard.nn_sockets[i],
-                          &img,
-                          sizeof (struct img) - (MAX_IMG_LENGTH - img.length),
-                          NN_DONTWAIT);
-               }
+               nn_send (piboard.nn_sockets[i],
+                        &img,
+                        sizeof (struct img) - (MAX_IMG_LENGTH - img.size),
+                        NN_DONTWAIT);
              }
-             image_draw(widget,
-                        filename);
            }
+
+           // 录制，需要转码
+#if 0
+           if (buffer
+           && piboard.saved)
+           {
+             fprintf (piboard.saved, "i %s %u\n",
+                      event->keyval,
+                      event->time);
+           }
+#endif
+
+           if (buffer)
+             free (buffer);
            free (filename);
          }
          break;
     case GDK_KEY_q:
-         if (piboard.channel)
-           sprintf (command.buf, "systemctl --user stop mumble@`systemd-escape %s`", piboard.channel);
-         else
+         // 退出远程
+         if (piboard.followers)
+         {
+           struct command command;
+           command.tag = 0x02;
            sprintf (command.buf, "systemctl --user stop mumble");
-         quit = TRUE;
+           if (piboard.channel)
+             sprintf (command.buf, "%s@`systemd-escape %s`",
+                      command.buf,
+                      piboard.channel);
+           for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
+           {
+             nn_send (piboard.nn_sockets[i],
+                      &command,
+                      sizeof (struct command) - (MAX_COMMAND_LENGTH - strlen(command.buf)) + 1,
+                      NN_DONTWAIT);
+           }
+         }
+
+         // 录制
+         if (piboard.saved)
+           fprintf (piboard.saved, "K %d %u\n",
+                    event->keyval,
+                    event->time);
+
+         sleep (1);  // 等待1秒钟，上述任务被完成
+         g_application_quit(G_APPLICATION(piboard.app));
          break;
     default:
          break;
-  }
-  if (piboard.followers)
-  {
-    for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
-    {
-      nn_send (piboard.nn_sockets[i],
-               &command,
-               sizeof (struct command) - (MAX_COMMAND_LENGTH - strlen(command.buf)) + 1,
-               NN_DONTWAIT);
-    }
-    if (piboard.saved)
-      fprintf (piboard.saved, "K %d %u\n",
-               event->keyval,
-               event->time);
-  }
-
-  if (quit)
-  {
-    // 等待命令被发送
-    sleep(1);
-    g_application_quit(G_APPLICATION(piboard.app));
   }
 
   return TRUE;
@@ -632,7 +685,7 @@ button_release_event_cb (GtkWidget *widget,
     brush_draw (widget, &piboard.stroke);
     if (piboard.followers)
     {
-      piboard.stroke.tag.tag = 0x00;
+      piboard.stroke.tag = 0x00;
       for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
         nn_send (piboard.nn_sockets[i],
                  &piboard.stroke,
@@ -708,47 +761,56 @@ static gboolean
 nn_sub(gpointer data)
 {
   int bytes;
-  GtkWidget *widget = data;
   void *msg = NULL;
+
   for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
   {
     bytes = nn_recv (piboard.nn_sockets[i], &msg, NN_MSG, NN_DONTWAIT);
-    if (bytes > 0)
+    if (bytes <=  0)
+      continue;
+
+    GtkWidget        *widget;
+    struct stroke    *stroke;
+    struct command   *command;
+    struct img       *img;
+
+    int *tag = (int *)msg;
+    switch (*tag)
     {
-      struct tag *tag = (struct tag *)msg;
-      if (tag->tag == 0x00)
-      {
-        struct stroke *stroke = (struct stroke *)msg;
-        for (int i = 0; i < stroke->length; i++)
-        {
-          stroke->motions[i].x *= (double)gtk_widget_get_allocated_width (widget) / stroke->width;
-          stroke->motions[i].y *= (double)gtk_widget_get_allocated_height (widget) / stroke->height;
-        }
-        brush_draw (widget, stroke);
-      }
-      else if (tag->tag == 0x01)
-      {
-        struct key *key = (struct key *)msg;
-        if (key->keyval == GDK_KEY_c)
-          clear_surface(widget);
-      }
-      else if (tag->tag == 0x02)
-      {
-        struct command *command = (struct command *)msg;
-        system(command->buf);
-      }
-      else if (tag->tag == 0x03)
-      {
-        struct img *img= (struct img *)msg;
-        char *filename = strdup(tmpnam(NULL));
-        FILE *fp = fopen (filename, "w+");
-        fwrite(img->buf, img->length, 1, fp);
-        fclose (fp);
-        image_draw (widget, filename);
-        free (filename);
-      }
-      nn_freemsg (msg);
+        case 0x00:
+            widget = (GtkWidget *)data;
+            stroke = (struct stroke *)msg;
+            for (int i = 0; i < stroke->length; i++)
+            {
+              stroke->motions[i].x *= (double)gtk_widget_get_allocated_width (widget) / stroke->width;
+              stroke->motions[i].y *= (double)gtk_widget_get_allocated_height (widget) / stroke->height;
+            }
+            brush_draw (widget, stroke);
+            break;
+        case 0x02:
+            command = (struct command *)msg;
+            system(command->buf);
+            break;
+        case 0x03:
+            widget = (GtkWidget *)data;
+            img= (struct img *)msg;
+            char filename[128];
+            sprintf (filename, "/tmp/temp.XXXXXX");
+            int fd = mkstemp (filename);
+            if (fd > 0)
+            {
+              write(fd, img->buf, img->size);
+              close (fd);
+              image_draw (widget,
+                          filename,
+                          NULL,
+                          NULL);
+            }
+            break;
+        default:
+            break;
     }
+    nn_freemsg (msg);
   }
   return TRUE;
 }
@@ -759,6 +821,8 @@ app_activate (GtkApplication *app,
 {
   GtkWidget *window;
   window = gtk_application_window_new (app);
+  gtk_widget_set_double_buffered (window,
+                                  FALSE);
 
   g_signal_connect (window, "destroy", G_CALLBACK (window_close), NULL);
 
@@ -802,7 +866,7 @@ app_activate (GtkApplication *app,
     sleep(1);
 
     struct command command;
-    command.tag.tag = 0x02;
+    command.tag = 0x02;
     if (piboard.channel)
       sprintf (command.buf, "systemctl --user start mumble@`systemd-escape %s`", piboard.channel);
     else
@@ -812,6 +876,7 @@ app_activate (GtkApplication *app,
                &command,
                sizeof (struct command) - (MAX_COMMAND_LENGTH - strlen(command.buf)) + 1,
                NN_DONTWAIT);
+    sleep (1);
     sprintf (command.buf, "systemctl --user restart piboard");
     for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
       nn_send (piboard.nn_sockets[i],

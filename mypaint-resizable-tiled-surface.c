@@ -123,6 +123,14 @@ mypaint_resizable_tiled_surface_clear(MyPaintResizableTiledSurface *self)
       mypaint_tiled_surface_tile_request_end((MyPaintTiledSurface *)self, &request);
     }
   }
+/*
+  int width = mypaint_resizable_tiled_surface_get_width (self);
+  int height = mypaint_resizable_tiled_surface_get_height (self);
+  self->parent.dirty_bbox.x = 0;
+  self->parent.dirty_bbox.y = 0;
+  self->parent.dirty_bbox.width = width;
+  self->parent.dirty_bbox.height = height;
+*/
 }
 
 MyPaintResizableTiledSurface *
