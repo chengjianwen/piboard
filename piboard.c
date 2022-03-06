@@ -450,10 +450,6 @@ image_draw (GtkWidget *widget, const char *filename)
 {
   GdkPixbuf *pix = gdk_pixbuf_new_from_file(filename,
                                              NULL);
-  printf ("bits per pixels: %d\n",
-           gdk_pixbuf_get_bits_per_sample(pix));
-  printf ("rowstride: %d\n",
-           gdk_pixbuf_get_rowstride(pix));
   char *pixels = (char *)gdk_pixbuf_read_pixels (pix);
   int n_channels = gdk_pixbuf_get_n_channels (pix);
   int rowstride = gdk_pixbuf_get_rowstride (pix);
@@ -472,7 +468,7 @@ image_draw (GtkWidget *widget, const char *filename)
 
   for (int tx = 0; tx < ceil((double)width / tile_size); tx++)
   {
-    for (int ty = 0; ty < ceil((double)height / tile_size); ty++)
+    for (int ty = 0; ty < floor((double)height / tile_size); ty++)
     {
       int max_x = tx < tiles_per_rows - 1 || width % tile_size == 0 ? tile_size : width % tile_size;
       int max_y = ty < number_of_tile_rows - 1 || height % tile_size == 0 ? tile_size : height % tile_size;
