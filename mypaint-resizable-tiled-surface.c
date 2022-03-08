@@ -124,6 +124,7 @@ mypaint_resizable_tiled_surface_clear(MyPaintResizableTiledSurface *self)
     }
   }
 /*
+  似乎不需要，不知道为什么
   int width = mypaint_resizable_tiled_surface_get_width (self);
   int height = mypaint_resizable_tiled_surface_get_height (self);
   self->parent.dirty_bbox.x = 0;

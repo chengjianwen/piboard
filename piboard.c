@@ -317,6 +317,8 @@ struct command {
     
 struct img {
     int    tag;
+    int    x;
+    int    y;
     int    size;
     char   buf[MAX_IMG_LENGTH];
 };
@@ -334,6 +336,177 @@ struct PiBoardApp {
 };
 
 struct PiBoardApp	piboard;
+
+static gboolean
+button_press_event_cb (GtkWidget *widget,
+                       GdkEventButton *event,
+                       gpointer        data)
+{
+  // 获取并释放光标资源
+  GdkCursor *cursor = gdk_window_get_cursor (gtk_widget_get_window(widget));
+  if (cursor)
+  {
+    // 绘制图像到surface
+    GdkPixbuf *pix = (GdkPixbuf *)g_object_get_data(G_OBJECT(cursor),
+                                                    "Pixbuf");
+    if (pix)
+    {
+      const guint8 *pixels = gdk_pixbuf_read_pixels (pix);
+      int n_channels = gdk_pixbuf_get_n_channels (pix);
+      int rowstride = gdk_pixbuf_get_rowstride (pix);
+    
+      int width = mypaint_resizable_tiled_surface_get_width (piboard.surface);
+      if (width > gdk_pixbuf_get_width(pix))
+        width =  gdk_pixbuf_get_width(pix);
+      int height = mypaint_resizable_tiled_surface_get_height (piboard.surface);
+      if (height > gdk_pixbuf_get_height(pix))
+        height=  gdk_pixbuf_get_height(pix);
+    
+      int tile_size = MYPAINT_TILE_SIZE;
+      int number_of_tile_rows = mypaint_resizable_tiled_surface_number_of_tile_rows (piboard.surface);
+      int tiles_per_rows = mypaint_resizable_tiled_surface_tiles_per_rows (piboard.surface);
+      MyPaintTiledSurface *surface = (MyPaintTiledSurface *)piboard.surface;
+    
+      int min_tx = floor(event->x / tile_size);
+      int max_tx = ceil((event->x + width) / tile_size);
+      int min_ty = floor(event->y / tile_size);
+      int max_ty = ceil((event->y + height) / tile_size);
+      for (int tx = min_tx; tx < max_tx; tx++)
+      {
+
+        for (int ty = min_ty; ty < max_ty; ty++)
+        {
+          int min_x = tx > min_tx ? 0 : (int)event->x % tile_size;
+          int max_x = tx < max_tx - 1 ? tile_size : (width + (int)event->x) % tile_size;
+          int min_y = ty > min_ty ? 0 : (int)event->y % tile_size;
+          int max_y = ty < max_ty - 1 ? tile_size : (height + (int)event->y) % tile_size;
+
+          MyPaintTileRequest request;
+          mypaint_tile_request_init(&request, 0, tx, ty, FALSE);
+          mypaint_tiled_surface_tile_request_start(surface, &request);
+    
+          for (int y = min_y; y < max_y; y++)
+          {
+            for (int x = min_x; x < max_x; x++)
+            {
+              int offset_x = tx * tile_size + x - event->x;
+              int offset_y = ty * tile_size + y - event->y;
+              int offset = offset_y * rowstride + offset_x * n_channels;
+              request.buffer[(tile_size * y + x) * 4]  = pixels[offset] << 7;
+              request.buffer[(tile_size * y + x) * 4 + 1]  = pixels[offset + 1] << 7;
+              request.buffer[(tile_size * y + x) * 4 + 2]  = pixels[offset + 2] << 7;
+            }
+          }
+          mypaint_tiled_surface_tile_request_end(surface, &request);
+        }
+      }
+    
+      // 绘制到屏幕
+      surface->dirty_bbox.x = event->x; 
+      surface->dirty_bbox.y = event->y; 
+      surface->dirty_bbox.width = width; 
+      surface->dirty_bbox.height= height; 
+      gtk_widget_queue_draw_area (widget, event->x, event->y, width, height);
+
+      // 发送到远程进行绘制
+      struct img img;
+      img.tag = 0x03;
+      img.x = event->x;
+      img.y = event->y;
+      GError *error = NULL;
+      gchar *buf = NULL;
+      gdk_pixbuf_save_to_buffer (pix,
+                                 &buf,
+                                 (gsize *)&img.size,
+                                 "png",
+                                 &error,
+                                 NULL);
+      if (!error
+      && buf
+      && piboard.followers)
+      {
+        memcpy (img.buf, buf, img.size);
+        for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
+        {
+          nn_send (piboard.nn_sockets[i],
+                   &img,
+                   sizeof (struct img) - (MAX_IMG_LENGTH - img.size),
+                   NN_DONTWAIT);
+        }
+
+        // 录制，需要转码
+#if 0
+        if (piboard.saved)
+        {
+          fprintf (piboard.saved, "i %s %u\n",
+                   event->keyval,
+                   event->time);
+        }
+#endif
+      }
+      if (buf)
+        free (buf);
+      g_object_unref(pix);
+    }
+// 释放光标资源
+    gdk_window_set_cursor (gtk_widget_get_window(widget),
+                           NULL);
+    g_object_unref(cursor);
+  }
+  return FALSE;
+}
+
+static gboolean
+button_scroll_event_cb (GtkWidget      *widget,
+                        GdkEventScroll *event,
+                        gpointer        data)
+{
+  // 获取并释放光标资源
+  GdkCursor *cursor = gdk_window_get_cursor (gtk_widget_get_window(widget));
+  if (cursor)
+  {
+    GdkPixbuf *src= (GdkPixbuf *)g_object_get_data(G_OBJECT(cursor),
+                                                    "Pixbuf");
+    GdkPixbuf *dest = NULL;
+    if (src)
+    {
+      switch (event->direction)
+      {
+        case  GDK_SCROLL_UP:
+            dest = gdk_pixbuf_scale_simple (src,
+                                            (double)gdk_pixbuf_get_width(src) * 1.1,
+                                            (double)gdk_pixbuf_get_height(src) * 1.1,
+                                            GDK_INTERP_NEAREST);
+            break;
+        case  GDK_SCROLL_DOWN:
+            dest = gdk_pixbuf_scale_simple (src,
+                                            (double)gdk_pixbuf_get_width(src) / 1.1,
+                                            (double)gdk_pixbuf_get_height(src) / 1.1,
+                                            GDK_INTERP_NEAREST);
+            break;
+        default:
+            break;
+      }
+    }
+
+    if (dest)
+    {
+      g_object_unref(cursor);
+      g_object_unref(src);
+      cursor = gdk_cursor_new_from_pixbuf (gdk_display_get_default(),
+                                           dest,
+                                           0,
+                                           0);
+
+      g_object_set_data(G_OBJECT(cursor),
+                        "Pixbuf",
+                        dest);
+      gdk_window_set_cursor (gtk_widget_get_window(widget),
+                             cursor);
+    }
+  }
+  return FALSE;
+}
 
 static gboolean
 screen_draw (GtkWidget *widget,
@@ -420,9 +593,7 @@ brush_draw (GtkWidget *widget, struct stroke *stroke)
 
 static void
 image_draw (GtkWidget *widget,
-            const gchar *filename,
-            gchar **buffer,
-            gsize *size)
+            const gchar *filename)
 {
   GError *error = NULL;
   GdkPixbuf *pix = gdk_pixbuf_new_from_file (filename,
@@ -433,78 +604,27 @@ image_draw (GtkWidget *widget,
     return;
   }
 
-  if (buffer
-  && size)
-  {
-    gdk_pixbuf_save_to_buffer (pix,
-                                buffer,
-                               size,
-                               "png",
-                               &error,
-                               NULL);
-    if (error)
-    {
-      fprintf (stderr, "图像文件保存失败: %s\n", filename);
-      return;
-    }
-  }
+  // 将窗口光标设置为图象
+  // 通过鼠标操作来定义图象的显示位置和缩放大小
+  // 移动鼠标确定位置
+  // 滚轮改变缩放大小
+  // 绘制过程将由鼠标按下回调函数执行
+  GdkCursor *cursor = gdk_cursor_new_from_pixbuf (gdk_display_get_default(),
+                                                  pix,
+                                                  0,
+                                                  0);
 
-  // 绘制图像到surface
-  char *pixels = (char *)gdk_pixbuf_read_pixels (pix);
-  int n_channels = gdk_pixbuf_get_n_channels (pix);
-  int rowstride = gdk_pixbuf_get_rowstride (pix);
-
-  int width = mypaint_resizable_tiled_surface_get_width (piboard.surface);
-  if (width > gdk_pixbuf_get_width(pix))
-    width =  gdk_pixbuf_get_width(pix);
-  int height = mypaint_resizable_tiled_surface_get_height (piboard.surface);
-  if (height > gdk_pixbuf_get_height(pix))
-    height=  gdk_pixbuf_get_height(pix);
-
-  int tile_size = MYPAINT_TILE_SIZE;
-  int number_of_tile_rows = mypaint_resizable_tiled_surface_number_of_tile_rows (piboard.surface);
-  int tiles_per_rows = mypaint_resizable_tiled_surface_tiles_per_rows (piboard.surface);
-  MyPaintTiledSurface *surface = (MyPaintTiledSurface *)piboard.surface;
-
-  for (int tx = 0; tx < ceil((double)width / tile_size); tx++)
-  {
-    for (int ty = 0; ty < floor((double)height / tile_size); ty++)
-    {
-      int max_x = tx < tiles_per_rows - 1 || width % tile_size == 0 ? tile_size : width % tile_size;
-      int max_y = ty < number_of_tile_rows - 1 || height % tile_size == 0 ? tile_size : height % tile_size;
-      MyPaintTileRequest request;
-      mypaint_tile_request_init(&request, 0, tx, ty, FALSE);
-      mypaint_tiled_surface_tile_request_start(surface, &request);
-
-      for (int y = 0; y < max_y; y++)
-      {
-        for (int x = 0; x < max_x; x++)
-        {
-          request.buffer[(tile_size * y + x) * 4]  = pixels[(ty * tile_size + y) * rowstride + (tx * tile_size + x) * n_channels] << 7;
-          request.buffer[(tile_size * y + x) * 4 + 1]  = pixels[(ty * tile_size + y) * rowstride + (tx * tile_size + x) * n_channels + 1] << 7;
-          request.buffer[(tile_size * y + x) * 4 + 2]  = pixels[(ty * tile_size + y) * rowstride + (tx * tile_size + x) * n_channels + 2] << 7;
-        }
-      }
-      mypaint_tiled_surface_tile_request_end(surface, &request);
-    }
-  }
-  g_object_unref(pix);
-
-  // 绘制到屏幕
-  surface->dirty_bbox.x = 0; 
-  surface->dirty_bbox.y = 0; 
-  surface->dirty_bbox.width = width; 
-  surface->dirty_bbox.height= height; 
-  gtk_widget_queue_draw_area (widget, 0, 0, width, height);
+  gdk_window_set_cursor (gtk_widget_get_window(widget),
+                         cursor);
+  g_object_set_data(G_OBJECT(cursor),
+                    "Pixbuf",
+                    pix);
 }
 
 static void 
 clear_surface (GtkWidget *widget)
 {
-  // 清屏
   mypaint_resizable_tiled_surface_clear (piboard.surface);
-
-  // 重绘屏幕
   gtk_widget_queue_draw (widget);
 }
 
@@ -513,6 +633,9 @@ key_press_event_cb (GtkWidget *widget,
                     GdkEventKey *event,
                     gpointer data)
 {
+  MyPaintTiledSurface *surface;
+  GtkWidget *dialog;
+
   switch (event->keyval)
   {
     case GDK_KEY_c:	// 清屏
@@ -541,8 +664,7 @@ key_press_event_cb (GtkWidget *widget,
                     event->time);
          break;
     case GDK_KEY_l:	// 强制刷新本地屏幕
-         ;
-         MyPaintTiledSurface *surface = (MyPaintTiledSurface *)piboard.surface;
+         surface = (MyPaintTiledSurface *)piboard.surface;
          int width = mypaint_resizable_tiled_surface_get_width (piboard.surface);
          int height = mypaint_resizable_tiled_surface_get_height (piboard.surface);
          surface->dirty_bbox.y = 0; 
@@ -552,8 +674,6 @@ key_press_event_cb (GtkWidget *widget,
          gtk_widget_queue_draw(widget);
          break;
     case GDK_KEY_i:	// 显示一副图像
-         ;
-         GtkWidget *dialog;
          dialog = gtk_file_chooser_dialog_new ("Open File",
                                                 NULL,
                                                 GTK_FILE_CHOOSER_ACTION_OPEN,
@@ -568,48 +688,8 @@ key_press_event_cb (GtkWidget *widget,
 
          if (filename)
          {
-           // 本地绘制
-           gchar *buffer = NULL;
-           gsize size;
            image_draw(widget,
-                      filename,
-                      &buffer,
-                      &size);
-
-           // 远程绘制
-           if (piboard.followers
-           && buffer
-           && size < MAX_IMG_LENGTH)
-           {
-             struct img img;
-             img.tag = 0x03;
-             img.size = size;
-             memcpy (img.buf, buffer, size);
-             free (buffer);
-             buffer = NULL;
-
-             for (int i = 0; piboard.nn_sockets[i] >= 0; i++)
-             {
-               nn_send (piboard.nn_sockets[i],
-                        &img,
-                        sizeof (struct img) - (MAX_IMG_LENGTH - img.size),
-                        NN_DONTWAIT);
-             }
-           }
-
-           // 录制，需要转码
-#if 0
-           if (buffer
-           && piboard.saved)
-           {
-             fprintf (piboard.saved, "i %s %u\n",
-                      event->keyval,
-                      event->time);
-           }
-#endif
-
-           if (buffer)
-             free (buffer);
+                      filename);
            free (filename);
          }
          break;
@@ -793,7 +873,7 @@ nn_sub(gpointer data)
             break;
         case 0x03:
             widget = (GtkWidget *)data;
-            img= (struct img *)msg;
+            img = (struct img *)msg;
             char filename[128];
             sprintf (filename, "/tmp/temp.XXXXXX");
             int fd = mkstemp (filename);
@@ -801,10 +881,16 @@ nn_sub(gpointer data)
             {
               write(fd, img->buf, img->size);
               close (fd);
+              printf ("save to file: %s\n", filename);
               image_draw (widget,
-                          filename,
-                          NULL,
-                          NULL);
+                          filename);
+              GdkEventButton* event = (GdkEventButton *)gdk_event_new(GDK_BUTTON_PRESS);
+              event->window = gtk_widget_get_window(widget);
+              g_object_ref(event->window);
+              event->time = GDK_CURRENT_TIME;
+              event->x = img->x;
+              event->y = img->y;
+              gtk_main_do_event ((GdkEvent *)event);
             }
             break;
         default:
@@ -821,10 +907,11 @@ app_activate (GtkApplication *app,
 {
   GtkWidget *window;
   window = gtk_application_window_new (app);
-  gtk_widget_set_double_buffered (window,
-                                  FALSE);
 
-  g_signal_connect (window, "destroy", G_CALLBACK (window_close), NULL);
+  g_signal_connect (window,
+                    "destroy",
+                    G_CALLBACK (window_close),
+                    NULL);
 
   gtk_container_set_border_width (GTK_CONTAINER (window), 8);
 
@@ -838,8 +925,16 @@ app_activate (GtkApplication *app,
                     G_CALLBACK (screen_draw), NULL);
 
   g_signal_connect (drawing_area, "configure-event",
-                    G_CALLBACK (configure_event_cb), NULL);
-
+                    G_CALLBACK (configure_event_cb),
+                    NULL);
+  g_signal_connect (drawing_area,
+                   "button-press-event",
+                   G_CALLBACK (button_press_event_cb),
+                   NULL);
+  g_signal_connect(drawing_area,
+                   "scroll-event", 
+                   G_CALLBACK(button_scroll_event_cb),
+                   NULL);
   g_signal_connect (drawing_area, "button-release-event",
                     G_CALLBACK (button_release_event_cb), NULL);
   g_signal_connect (drawing_area, "key-press-event",
@@ -849,7 +944,11 @@ app_activate (GtkApplication *app,
 
   gtk_widget_set_can_focus (drawing_area, TRUE);
   gtk_widget_add_events (drawing_area, 
-                         GDK_KEY_PRESS_MASK | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
+                         GDK_KEY_PRESS_MASK
+                         | GDK_BUTTON_PRESS_MASK
+                         | GDK_BUTTON_RELEASE_MASK
+                         | GDK_POINTER_MOTION_MASK
+                         | GDK_SCROLL_MASK);
   if (piboard.followers)
   {
     for(int i = 0; piboard.followers[i]; i++)
